@@ -90,3 +90,39 @@ class KnowledgeIngestionError(GTMAgentOSError):
     status_code = 500
     code = "knowledge_ingestion_failed"
     public_message = "The knowledge document could not be ingested"
+
+
+class ToolNotFoundError(GTMAgentOSError):
+    status_code = 404
+    code = "unknown_tool"
+    public_message = "The requested tool is not available"
+
+
+class ToolInputInvalidError(GTMAgentOSError):
+    status_code = 422
+    code = "invalid_tool_input"
+    public_message = "The tool input is invalid"
+
+
+class ToolOutputInvalidError(GTMAgentOSError):
+    status_code = 502
+    code = "invalid_tool_output"
+    public_message = "The tool returned an invalid result"
+
+
+class ToolExecutionError(GTMAgentOSError):
+    status_code = 500
+    code = "tool_execution_failed"
+    public_message = "The tool could not be executed"
+
+
+class LeadNotFoundError(GTMAgentOSError):
+    status_code = 404
+    code = "lead_not_found"
+    public_message = "The requested lead was not found"
+
+
+class AgentRunNotFoundError(GTMAgentOSError):
+    status_code = 404
+    code = "agent_run_not_found"
+    public_message = "The requested agent run was not found"

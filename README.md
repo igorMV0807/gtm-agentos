@@ -1,6 +1,6 @@
 # GTM AgentOS
 
-GTM AgentOS is a portfolio-grade backend for AI-assisted go-to-market workflows. This repository contains **Phase 1: AI Lead Qualification Core**, **Phase 2: Agent Orchestration with LangGraph**, and **Phase 3: RAG Knowledge Layer**.
+GTM AgentOS is a portfolio-grade backend for AI-assisted go-to-market workflows. This repository contains **Phase 1: AI Lead Qualification Core**, **Phase 2: Agent Orchestration with LangGraph**, **Phase 3: RAG Knowledge Layer**, and **Phase 4: MCP & Controlled Agent Tools**.
 
 ## Problem
 
@@ -8,7 +8,7 @@ Revenue teams receive leads from multiple sources, but qualification is often in
 
 ## Solution
 
-The Phase 1 endpoint validates a lead, reuses an existing record when the same lead is submitted again, persists the lead in Supabase/PostgreSQL, asks Claude for a structured qualification, validates the result with Pydantic, stores the decision, and records the complete agent execution. Phase 2 adds a separate LangGraph endpoint that reuses this qualification service, applies deterministic routing, and records every state transition. Phase 3 grounds HOT-lead research in approved internal GTM documents retrieved with pgvector.
+The Phase 1 endpoint validates a lead, reuses an existing record when the same lead is submitted again, persists the lead in Supabase/PostgreSQL, asks Claude for a structured qualification, validates the result with Pydantic, stores the decision, and records the complete agent execution. Phase 2 adds a separate LangGraph endpoint that reuses this qualification service, applies deterministic routing, and records every state transition. Phase 3 grounds HOT-lead research in approved internal GTM documents retrieved with pgvector. Phase 4 exposes a small, read-only, schema-validated MCP tool surface over the same internal services and records every accepted or rejected execution attempt.
 
 The response contains:
 
@@ -27,7 +27,7 @@ app/
 │   └── state.py                    # Validated LangGraph state and transitions
 ├── api/
 │   ├── dependencies.py             # Composition root
-│   └── routes/leads.py             # HTTP endpoint
+│   └── routes/                      # Existing lead and knowledge HTTP endpoints
 ├── core/
 │   ├── config.py                   # Environment-based settings
 │   ├── exceptions.py               # Safe application errors
@@ -35,12 +35,21 @@ app/
 ├── models/
 │   ├── lead.py                     # Lead and agent run records
 │   ├── knowledge.py                # Knowledge, chunk, and evidence records
+│   ├── mcp.py                      # Tool audit and aggregate records
 │   └── orchestration.py            # Persisted transition record
+├── mcp/
+│   ├── server.py                   # Isolated stdio MCP server
+│   ├── registry.py                 # Closed tool registry and schemas
+│   ├── execution.py                # Validation, sanitization, and audit boundary
+│   ├── schemas.py                  # Explicit tool input/output contracts
+│   └── tools/                      # Read-only lead, RAG, run, and analytics handlers
 ├── repositories/
 │   ├── lead_repository.py          # Lead persistence interface + Supabase adapter
 │   ├── agent_run_repository.py     # Agent run interface + Supabase adapter
 │   ├── knowledge_repository.py     # Document and vector persistence
 │   ├── rag_repository.py           # Vector RPC and evidence persistence
+│   ├── mcp_repository.py           # Controlled read-only tool queries
+│   ├── tool_call_repository.py     # Append-only sanitized tool audit
 │   └── agent_state_transition_repository.py
 ├── schemas/
 │   ├── lead.py                     # Input validation
@@ -60,11 +69,12 @@ app/
 sql/001_initial_schema.sql          # Tables, constraints, indexes, RLS, grants
 sql/002_agent_state_transitions.sql # Immutable graph transition history
 sql/003_rag_knowledge_base.sql      # pgvector knowledge and RAG evidence
+sql/004_mcp_tool_calls.sql          # Immutable sanitized tool-call audit
 demo_knowledge/                     # Fictional portfolio knowledge documents
 tests/                              # External-service-free test suite
 ```
 
-The service layer depends on repository, LLM, and embedding interfaces rather than vendor clients. Supabase, Anthropic, and Voyage are adapters at the edges, so provider-specific code does not leak into qualification, ingestion, or retrieval logic.
+The service layer depends on repository, LLM, embedding, and tool interfaces rather than vendor clients. Supabase, Anthropic, Voyage, and MCP are adapters at the edges, so provider-specific code does not leak into qualification, ingestion, retrieval, or tool policy.
 
 ## Tech Stack
 
@@ -76,6 +86,7 @@ The service layer depends on repository, LLM, and embedding interfaces rather th
 - Voyage AI `voyage-4` embeddings
 - pgvector with cosine similarity and HNSW indexing
 - LangGraph 1.2
+- Official MCP Python SDK `2.1.1`
 - Pytest
 
 ## How It Works
@@ -310,9 +321,144 @@ Claude receives only the validated lead and retrieved chunks. Its system instruc
 insufficient_internal_knowledge
 ```
 
+## Phase 4 — MCP & Agent Tools
+
+### Why MCP
+
+The [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28/server/tools) gives an agent a standard way to discover and call narrowly defined tools without receiving direct database credentials or database clients. GTM AgentOS uses the official Tier 1 [Python SDK](https://github.com/modelcontextprotocol/python-sdk) pinned to `mcp==2.1.1`, compatible with the current 2026-07-28 protocol and earlier negotiated revisions, and runs its MCP server over `stdio`, isolated from the public HTTP application.
+
+Phase 4 is deliberately read-only. It does not send email, update a CRM, run shell commands, execute arbitrary SQL, fetch arbitrary URLs, inspect files, or read environment variables. External actions remain out of scope until a later human-in-the-loop phase.
+
+### Tool Registry
+
+`ToolRegistry` is the only executable tool catalog. Every definition contains:
+
+- a unique allowlisted name;
+- a concise description;
+- a Pydantic input model;
+- a Pydantic output model;
+- one handler.
+
+The server exposes exactly these tools:
+
+| Tool | Purpose | Key limits |
+|---|---|---|
+| `get_lead` | Return safe lead fields | UUID only; email and website omitted |
+| `search_leads` | Filter leads | Approved filters only; maximum 50 results |
+| `get_lead_history` | Return safe run and transition history | UUID only; raw model input/output omitted |
+| `search_internal_knowledge` | Search internal GTM knowledge | Existing `RetrievalService`; query ≤ 1,000 characters; Top K ≤ 10 |
+| `get_agent_run` | Return an auditable run summary | UUID only; safe output keys only |
+| `get_pipeline_summary` | Return simple classification and route counts | Fixed aggregates; no custom grouping |
+
+Names outside this registry are rejected. Tool parameters cannot supply table names, SQL, Python, shell commands, file paths, secrets, or URLs.
+
+### Schemas and Security Boundaries
+
+Inputs and outputs are validated twice: the MCP SDK derives protocol schemas from typed functions, and the internal executor validates against the registry's explicit Pydantic models before and after the handler. Models reject extra fields and bound strings, filters, `limit`, and `top_k`.
+
+The LLM never receives a Supabase client. MCP handlers call repository interfaces or the existing Phase 3 `RetrievalService`. Lead tools omit email, website, qualification reason, raw run inputs, raw run outputs, and unsafe internal errors. Audit payloads recursively redact fields whose names indicate passwords, tokens, credentials, API keys, authorization headers, cookies, or secrets.
+
+### Auditability
+
+Every registry execution writes one append-only `tool_calls` row with sanitized input/output, status, safe error code, latency, and optional lead/run foreign keys. Rejected unknown tools and invalid payloads are audited as `rejected`; handler failures are audited as `failed`; valid calls are `completed`.
+
+`tool_calls` has RLS enabled. `public`, `anon`, and `authenticated` have no privileges. The backend `service_role` receives only `SELECT` and `INSERT`, so existing audit rows cannot be updated or deleted through this adapter.
+
+Structured log events are limited to safe metadata:
+
+```text
+mcp_server_started
+tool_call_started
+tool_call_completed
+tool_call_failed
+tool_input_rejected
+unknown_tool_rejected
+```
+
+### Agent Tool Execution
+
+The production LangGraph was not changed merely to force a demonstration tool call. Qualification, routing, and HOT-lead RAG remain deterministic and backward compatible. A host or future controlled graph node can pass an existing `lead_id` or `agent_run_id` to the MCP client, receive a schema-validated result, and then continue the agent flow. Tests demonstrate this path with the SDK's in-memory MCP client and the same registry used by the `stdio` server.
+
+```text
+Claude / Agent
+      ↓
+LangGraph
+      ↓
+Tool Decision
+      ↓
+MCP Server
+      ↓
+Tool Registry
+   ↙    ↓     ↘
+Leads  RAG   Runs
+   ↘    ↓     ↙
+   Supabase
+      ↓
+Validated Result
+      ↓
+Agent continues
+```
+
+This relationship is additive: LangGraph owns state and deterministic routing, RAG owns grounded internal retrieval, and MCP owns discovery, tool schemas, execution policy, and tool-call auditing.
+
+Example MCP calls use structured arguments and results:
+
+```json
+{
+  "tool": "get_lead",
+  "arguments": {"lead_id": "11111111-1111-4111-8111-111111111111"},
+  "result": {
+    "lead": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "name": "Example Buyer",
+      "company": "Example SaaS",
+      "classification": "HOT"
+    }
+  }
+}
+```
+
+```json
+{
+  "tool": "search_internal_knowledge",
+  "arguments": {"query": "Head of Sales pilot", "top_k": 3},
+  "result": {
+    "query": "Head of Sales pilot",
+    "results": [
+      {
+        "document_id": "22222222-2222-4222-8222-222222222222",
+        "chunk_id": "33333333-3333-4333-8333-333333333333",
+        "title": "Sales Playbook",
+        "content": "Use a focused pilot for qualified B2B SaaS leads.",
+        "similarity": 0.91
+      }
+    ],
+    "count": 1
+  }
+}
+```
+
+```json
+{
+  "tool": "get_pipeline_summary",
+  "arguments": {},
+  "result": {
+    "total_leads": 9,
+    "hot": 4,
+    "warm": 3,
+    "cold": 2,
+    "research": 4,
+    "nurture": 3,
+    "stop": 2
+  }
+}
+```
+
+An attempted `delete_lead` call is rejected as `unknown_tool`; there is no destructive handler to invoke.
+
 ## Database
 
-Run [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql), [`sql/002_agent_state_transitions.sql`](sql/002_agent_state_transitions.sql), and [`sql/003_rag_knowledge_base.sql`](sql/003_rag_knowledge_base.sql) in order before starting the API.
+Run [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql), [`sql/002_agent_state_transitions.sql`](sql/002_agent_state_transitions.sql), [`sql/003_rag_knowledge_base.sql`](sql/003_rag_knowledge_base.sql), and [`sql/004_mcp_tool_calls.sql`](sql/004_mcp_tool_calls.sql) in order before starting the API or MCP server.
 
 The migration creates:
 
@@ -339,6 +485,14 @@ The Phase 3 migration adds:
 - the two new HOT-path states in transition constraints;
 - RLS on every new table, no `anon` or `authenticated` privileges, and least-privilege backend grants.
 
+The Phase 4 migration adds:
+
+- append-only `tool_calls` with safe status, error, latency, input, and output constraints;
+- nullable foreign keys to leads and agent runs that preserve the audit row on deletion;
+- indexes for run, lead, tool, status, and creation time;
+- RLS and explicit revocation from `public`, `anon`, and `authenticated`;
+- backend-only `SELECT` and `INSERT` privileges.
+
 `SUPABASE_KEY` must be a backend-only Supabase secret/service-role key. Never expose it in a browser or commit it to Git.
 
 ## Reliability
@@ -357,6 +511,10 @@ The Phase 3 migration adds:
 - Retrieval applies both a bounded Top K and a similarity threshold.
 - Empty retrieval skips Claude and returns a controlled fallback.
 - RAG evidence links every source chunk to its lead and orchestration run.
+- MCP exposes a fixed registry of six read-only tools over `stdio` only.
+- Tool inputs and outputs are schema-validated before and after every handler.
+- Tool audit records are append-only and recursively redact credential-shaped fields.
+- No MCP tool accepts SQL, table names, shell commands, file paths, arbitrary URLs, or code.
 
 ## Running Locally
 
@@ -387,7 +545,7 @@ Requirements: Python 3.12 and a Supabase project.
    `requirements.txt` lists the direct dependencies; `requirements.lock` pins the
    complete tested dependency graph for reproducible installations.
 
-3. Create the database objects by running `sql/001_initial_schema.sql`, `sql/002_agent_state_transitions.sql`, and `sql/003_rag_knowledge_base.sql` in order in the Supabase SQL Editor.
+3. Create the database objects by running `sql/001_initial_schema.sql`, `sql/002_agent_state_transitions.sql`, `sql/003_rag_knowledge_base.sql`, and `sql/004_mcp_tool_calls.sql` in order in the Supabase SQL Editor.
 
 4. Copy `.env.example` to `.env` and configure:
 
@@ -419,6 +577,16 @@ Requirements: Python 3.12 and a Supabase project.
    curl http://localhost:8000/health
    ```
 
+7. Run the isolated MCP server over `stdio` when an MCP host needs the tools.
+
+   ```bash
+   python -m app.mcp.server
+   ```
+
+   Configure the MCP host to launch that command with this project as its working
+   directory. Keep the environment server-side; never place Supabase, Anthropic,
+   or Voyage secrets in MCP tool arguments.
+
 ## Testing
 
 Run:
@@ -427,7 +595,7 @@ Run:
 pytest
 ```
 
-The tests replace Supabase, Claude, Voyage, and vector search with in-memory fakes or local HTTP mock transports. They do not require credentials, network access, or paid API calls.
+The tests replace Supabase, Claude, Voyage, vector search, MCP repositories, and tool auditing with in-memory fakes or local transports. They do not require credentials, network access, or paid API calls.
 
 Covered behavior includes:
 
@@ -455,14 +623,22 @@ Covered behavior includes:
 - persisted retrieval evidence;
 - safe embedding, retrieval, and research-provider failures;
 - continued backward compatibility for WARM, COLD, and Phase 1 responses.
+- all six read-only MCP tools;
+- exact MCP tool exposure through the official in-memory client;
+- registry allowlisting and rejection of unknown tools;
+- strict input/output schemas and rejection of extra filters;
+- result limits and reuse of the existing retrieval service;
+- completed, failed, and rejected tool-call audit records;
+- secret redaction from logs and stored audit payloads;
+- continued compatibility of the Phase 1–3 HTTP endpoints.
 
 ## Roadmap
 
 - **Phase 1 — AI Lead Qualification Core** (completed)
 - **Phase 2 — Agent orchestration with LangGraph** (completed)
 - **Phase 3 — RAG + PostgreSQL/pgvector** (completed)
-- **Phase 4 — Tools + MCP Server**
+- **Phase 4 — Tools + MCP Server** (completed)
 - **Phase 5 — n8n + CRM + email integrations**
 - **Phase 6 — Observability + Human-in-the-loop + dashboard**
 
-No Phase 4+ functionality is implemented in this codebase.
+No Phase 5+ functionality is implemented in this codebase.

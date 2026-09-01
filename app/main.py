@@ -14,8 +14,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="GTM AgentOS",
-    version="0.3.0",
-    description="Lead qualification, LangGraph orchestration, and grounded GTM RAG",
+    version="0.4.0",
+    description=(
+        "Lead qualification, LangGraph orchestration, grounded GTM RAG, and "
+        "controlled MCP tools"
+    ),
 )
 app.include_router(leads_router)
 app.include_router(knowledge_router)

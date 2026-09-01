@@ -17,7 +17,14 @@ from app.repositories.knowledge_repository import (
     KnowledgeRepository,
     SupabaseKnowledgeRepository,
 )
+from app.mcp.execution import ToolExecutionService
+from app.mcp.registry import ToolRegistry, build_tool_registry
+from app.repositories.mcp_repository import MCPDataRepository, SupabaseMCPDataRepository
 from app.repositories.rag_repository import SupabaseRagRepository
+from app.repositories.tool_call_repository import (
+    SupabaseToolCallRepository,
+    ToolCallRepository,
+)
 from app.services.agent_orchestration_service import AgentOrchestrationService
 from app.services.chunking_service import TextChunker
 from app.services.embedding_service import EmbeddingProvider, build_embedding_provider
@@ -62,6 +69,16 @@ def get_rag_repository() -> SupabaseRagRepository:
 
 
 @lru_cache
+def get_mcp_data_repository() -> MCPDataRepository:
+    return SupabaseMCPDataRepository(get_supabase_client())
+
+
+@lru_cache
+def get_tool_call_repository() -> ToolCallRepository:
+    return SupabaseToolCallRepository(get_supabase_client())
+
+
+@lru_cache
 def get_llm_service() -> LLMService:
     return build_llm_service(get_settings())
 
@@ -92,6 +109,22 @@ def get_knowledge_ingestion_service() -> KnowledgeIngestionService:
             chunk_size_words=settings.rag_chunk_size_words,
             overlap_words=settings.rag_chunk_overlap_words,
         ),
+    )
+
+
+@lru_cache
+def get_tool_registry() -> ToolRegistry:
+    return build_tool_registry(
+        repository=get_mcp_data_repository(),
+        retrieval_service=get_retrieval_service(),
+    )
+
+
+@lru_cache
+def get_tool_execution_service() -> ToolExecutionService:
+    return ToolExecutionService(
+        registry=get_tool_registry(),
+        audit_repository=get_tool_call_repository(),
     )
 
 
