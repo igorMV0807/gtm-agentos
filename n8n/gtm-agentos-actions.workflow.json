@@ -1,17 +1,19 @@
 {
+  "id": "5a7e5c0de36b4f21",
   "name": "GTM AgentOS - Controlled External Actions",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
         "path": "gtm-agentos-actions",
-        "responseMode": "lastNode",
+        "responseMode": "responseNode",
         "options": {}
       },
       "id": "webhook-trigger",
       "name": "Webhook Trigger",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
+      "webhookId": "f254e78c-9f7b-4e79-88aa-0c563901bd40",
       "position": [0, 260]
     },
     {
@@ -145,7 +147,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nconst callbackUrl = $env.GTM_AGENTOS_CALLBACK_URL;\nif (!secret || !callbackUrl) throw new Error('Callback environment is not configured');\nconst parsedUrl = new URL(callbackUrl);\nconst localHosts = new Set(['localhost', '127.0.0.1', '::1']);\nif (parsedUrl.protocol !== 'https:' && !localHosts.has(parsedUrl.hostname)) throw new Error('Callback URL must use HTTPS');\nif (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) throw new Error('Callback URL cannot contain credentials, query, or fragment');\nconst callback = { action_id: $json.action_id, status: 'completed', external_reference: 'replace-with-provider-reference', metadata: { workflow: 'gtm-agentos-actions' } };\nconst rawBody = JSON.stringify(callback);\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + rawBody).digest('hex');\nreturn [{ json: { callbackUrl, rawBody, timestamp, signature, action_id: $json.action_id } }];"
+        "jsCode": "const crypto = require('crypto');\nconst { URL } = require('url');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nconst callbackUrl = $env.GTM_AGENTOS_CALLBACK_URL;\nif (!secret || !callbackUrl) throw new Error('Callback environment is not configured');\nconst parsedUrl = new URL(callbackUrl);\nconst localHosts = new Set(['localhost', '127.0.0.1', '::1']);\nif (parsedUrl.protocol !== 'https:' && !localHosts.has(parsedUrl.hostname)) throw new Error('Callback URL must use HTTPS');\nif (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) throw new Error('Callback URL cannot contain credentials, query, or fragment');\nconst callback = { action_id: $json.action_id, status: 'completed', external_reference: 'replace-with-provider-reference', metadata: { workflow: 'gtm-agentos-actions' } };\nconst rawBody = JSON.stringify(callback);\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + rawBody).digest('hex');\nreturn [{ json: { callbackUrl, rawBody, timestamp, signature, action_id: $json.action_id } }];"
       },
       "id": "build-callback",
       "name": "Build Signed Callback",
@@ -176,6 +178,30 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1200, 260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-success",
+      "name": "Return Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1440, 260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"error\":\"action_type_not_allowed\"}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "reject-disallowed",
+      "name": "Reject Disallowed Action",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [700, 540]
     }
   ],
   "connections": {
@@ -191,7 +217,8 @@
         [{ "node": "Task Provider Placeholder", "type": "main", "index": 0 }],
         [{ "node": "Draft Provider Placeholder", "type": "main", "index": 0 }],
         [{ "node": "Email Provider Placeholder", "type": "main", "index": 0 }],
-        [{ "node": "CRM Status Placeholder", "type": "main", "index": 0 }]
+        [{ "node": "CRM Status Placeholder", "type": "main", "index": 0 }],
+        [{ "node": "Reject Disallowed Action", "type": "main", "index": 0 }]
       ]
     },
     "CRM Provider Placeholder": {
@@ -211,6 +238,9 @@
     },
     "Build Signed Callback": {
       "main": [[{ "node": "Callback GTM AgentOS", "type": "main", "index": 0 }]]
+    },
+    "Callback GTM AgentOS": {
+      "main": [[{ "node": "Return Success", "type": "main", "index": 0 }]]
     }
   },
   "pinData": {},
@@ -218,7 +248,7 @@
     "executionOrder": "v1"
   },
   "active": false,
-  "versionId": "b11ef845-2ae0-4d48-9e30-d3f8d71270e4",
+  "versionId": "3060f51a-7f47-4f63-b4ae-f32a1dc6f5c7",
   "meta": {
     "templateCredsSetupCompleted": false
   },

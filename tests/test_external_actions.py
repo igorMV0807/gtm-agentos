@@ -848,10 +848,21 @@ def test_demo_workflow_is_valid_json_without_credentials() -> None:
     path = Path(__file__).parents[1] / "n8n" / "gtm-agentos-actions.workflow.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     serialized = json.dumps(data).lower()
+    nodes = {node["name"]: node for node in data["nodes"]}
+    switch_outputs = data["connections"]["Switch Allowlisted Action"]["main"]
 
+    assert data["id"] == "5a7e5c0de36b4f21"
     assert data["name"] == "GTM AgentOS - Controlled External Actions"
     for action_type in ExternalActionType:
         assert action_type.value in serialized
+    assert nodes["Webhook Trigger"]["webhookId"]
+    assert nodes["Webhook Trigger"]["parameters"]["responseMode"] == "responseNode"
+    assert "require('crypto')" in nodes["Validate Signature"]["parameters"]["jsCode"]
+    assert "require('url')" in nodes["Build Signed Callback"]["parameters"]["jsCode"]
+    assert switch_outputs[5][0]["node"] == "Reject Disallowed Action"
+    assert nodes["Reject Disallowed Action"]["parameters"]["options"]["responseCode"] == 400
+    assert "action_type_not_allowed" in serialized
+    assert data["connections"]["Callback GTM AgentOS"]["main"][0][0]["node"] == "Return Success"
     assert "n8n_webhook_secret" in serialized
     assert "gtm_agentos_callback_url" in serialized
     assert all("credentials" not in node for node in data["nodes"])
