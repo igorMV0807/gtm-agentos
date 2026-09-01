@@ -16,6 +16,7 @@ from app.models.lead import AgentRunRecord, LeadRecord
 from app.models.knowledge import RagRetrievalRecord
 from app.models.orchestration import AgentStateTransitionRecord
 from app.schemas.knowledge import RetrievedChunk
+from app.schemas.external_actions import EmailDraft
 from app.schemas.lead import LeadQualifyRequest
 from app.schemas.qualification import (
     LeadClassification,
@@ -200,6 +201,13 @@ class FakeLLMService:
         self.research_chunks: list[RetrievedChunk] = []
         self.research_context = "Grounded internal GTM research context."
         self.research_error: GTMAgentOSError | None = None
+        self.draft_calls = 0
+        self.draft_chunks: list[RetrievedChunk] = []
+        self.draft = EmailDraft(
+            subject="A focused GTM pilot for Acme",
+            body="Hi John, our internal playbook suggests a focused pilot.",
+            reasoning_summary="Uses the approved ICP and pilot guidance.",
+        )
 
     def qualify(self, lead: LeadQualifyRequest) -> QualificationResult:
         self.calls += 1
@@ -215,6 +223,16 @@ class FakeLLMService:
         if self.research_error:
             raise self.research_error
         return self.research_context
+
+    def draft_outreach_email(
+        self,
+        lead: LeadQualifyRequest,
+        research_context: str,
+        chunks: list[RetrievedChunk],
+    ) -> EmailDraft:
+        self.draft_calls += 1
+        self.draft_chunks = chunks
+        return self.draft
 
 
 class FakeRetrievalService:

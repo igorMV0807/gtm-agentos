@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import AnyHttpUrl, SecretStr
+from pydantic import AnyHttpUrl, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.exceptions import ApplicationConfigurationError
@@ -22,9 +22,15 @@ class Settings(BaseSettings):
     rag_similarity_threshold: float = 0.40
     rag_chunk_size_words: int = 160
     rag_chunk_overlap_words: int = 24
+    n8n_webhook_url: AnyHttpUrl | None = None
+    n8n_webhook_secret: SecretStr | None = None
+    n8n_timeout_seconds: float = Field(default=10.0, ge=1.0, le=30.0)
+    n8n_signature_max_age_seconds: int = Field(default=300, ge=30, le=900)
+    crm_provider: str = "hubspot"
+    hubspot_access_token: SecretStr | None = None
 
-    # Internal defaults intentionally stay out of .env.example to keep its public
-    # configuration surface limited to the variables requested for Phase 1.
+    # Internal timeout defaults stay out of .env.example; operators normally need
+    # only provider identities, URLs, keys, and the bounded public tuning fields.
     llm_timeout_seconds: float = 30.0
     embedding_timeout_seconds: float = 30.0
 
@@ -93,6 +99,51 @@ class Settings(BaseSettings):
             self.embedding_api_key.get_secret_value(),
             self.embedding_dimension,
         )
+
+    def require_n8n(self) -> tuple[str, str]:
+        if self.n8n_webhook_url is None or self.n8n_webhook_secret is None:
+            raise ApplicationConfigurationError(
+                "N8N_WEBHOOK_URL and N8N_WEBHOOK_SECRET must be configured"
+            )
+        host = (self.n8n_webhook_url.host or "").lower()
+        if (
+            self.n8n_webhook_url.username
+            or self.n8n_webhook_url.password
+            or self.n8n_webhook_url.query
+            or self.n8n_webhook_url.fragment
+        ):
+            raise ApplicationConfigurationError(
+                "N8N_WEBHOOK_URL cannot contain credentials, query, or fragment"
+            )
+        if self.n8n_webhook_url.scheme != "https" and host not in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }:
+            raise ApplicationConfigurationError(
+                "N8N_WEBHOOK_URL must use HTTPS unless it targets localhost"
+            )
+        secret = self.n8n_webhook_secret.get_secret_value()
+        if len(secret.encode("utf-8")) < 16:
+            raise ApplicationConfigurationError(
+                "N8N_WEBHOOK_SECRET must contain at least 16 bytes"
+            )
+        return str(self.n8n_webhook_url), secret
+
+    def require_crm(self) -> tuple[str, str]:
+        provider = self.crm_provider.strip().lower()
+        if provider != "hubspot":
+            raise ApplicationConfigurationError(
+                f"Unsupported CRM_PROVIDER: {provider or '<empty>'}"
+            )
+        if (
+            self.hubspot_access_token is None
+            or not self.hubspot_access_token.get_secret_value().strip()
+        ):
+            raise ApplicationConfigurationError(
+                "HUBSPOT_ACCESS_TOKEN must be configured before using HubSpot"
+            )
+        return provider, self.hubspot_access_token.get_secret_value()
 
 
 @lru_cache

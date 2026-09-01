@@ -1,0 +1,226 @@
+{
+  "name": "GTM AgentOS - Controlled External Actions",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gtm-agentos-actions",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('N8N_WEBHOOK_SECRET is not configured');\nconst timestamp = String($json.headers?.['x-gtm-timestamp'] || '');\nconst signature = String($json.headers?.['x-gtm-signature'] || '');\nconst sentAt = Number(timestamp);\nif (!Number.isInteger(sentAt) || Math.abs(Math.floor(Date.now() / 1000) - sentAt) > 300) throw new Error('Rejected stale webhook');\nconst body = JSON.stringify($json.body);\nconst expected = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + body).digest('hex');\nconst valid = signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));\nif (!valid) throw new Error('Rejected invalid webhook signature');\nreturn [{ json: $json.body }];"
+      },
+      "id": "validate-signature",
+      "name": "Validate Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 260]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "create_or_update_crm_lead",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "CRM Lead"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "create_follow_up_task",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Task"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "draft_outreach_email",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Draft"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "send_approved_email",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Email"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "mark_lead_status",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "CRM Status"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "switch-action",
+      "name": "Switch Allowlisted Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [450, 260]
+    },
+    {
+      "parameters": {},
+      "id": "crm-provider",
+      "name": "CRM Provider Placeholder",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [700, 20]
+    },
+    {
+      "parameters": {},
+      "id": "task-provider",
+      "name": "Task Provider Placeholder",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [700, 120]
+    },
+    {
+      "parameters": {},
+      "id": "draft-provider",
+      "name": "Draft Provider Placeholder",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [700, 220]
+    },
+    {
+      "parameters": {},
+      "id": "email-provider",
+      "name": "Email Provider Placeholder",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [700, 320]
+    },
+    {
+      "parameters": {},
+      "id": "status-provider",
+      "name": "CRM Status Placeholder",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [700, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nconst callbackUrl = $env.GTM_AGENTOS_CALLBACK_URL;\nif (!secret || !callbackUrl) throw new Error('Callback environment is not configured');\nconst parsedUrl = new URL(callbackUrl);\nconst localHosts = new Set(['localhost', '127.0.0.1', '::1']);\nif (parsedUrl.protocol !== 'https:' && !localHosts.has(parsedUrl.hostname)) throw new Error('Callback URL must use HTTPS');\nif (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) throw new Error('Callback URL cannot contain credentials, query, or fragment');\nconst callback = { action_id: $json.action_id, status: 'completed', external_reference: 'replace-with-provider-reference', metadata: { workflow: 'gtm-agentos-actions' } };\nconst rawBody = JSON.stringify(callback);\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + rawBody).digest('hex');\nreturn [{ json: { callbackUrl, rawBody, timestamp, signature, action_id: $json.action_id } }];"
+      },
+      "id": "build-callback",
+      "name": "Build Signed Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-GTM-Timestamp", "value": "={{ $json.timestamp }}" },
+            { "name": "X-GTM-Signature", "value": "={{ $json.signature }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.rawBody }}",
+        "options": {}
+      },
+      "id": "callback-agentos",
+      "name": "Callback GTM AgentOS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 260]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Validate Signature", "type": "main", "index": 0 }]]
+    },
+    "Validate Signature": {
+      "main": [[{ "node": "Switch Allowlisted Action", "type": "main", "index": 0 }]]
+    },
+    "Switch Allowlisted Action": {
+      "main": [
+        [{ "node": "CRM Provider Placeholder", "type": "main", "index": 0 }],
+        [{ "node": "Task Provider Placeholder", "type": "main", "index": 0 }],
+        [{ "node": "Draft Provider Placeholder", "type": "main", "index": 0 }],
+        [{ "node": "Email Provider Placeholder", "type": "main", "index": 0 }],
+        [{ "node": "CRM Status Placeholder", "type": "main", "index": 0 }]
+      ]
+    },
+    "CRM Provider Placeholder": {
+      "main": [[{ "node": "Build Signed Callback", "type": "main", "index": 0 }]]
+    },
+    "Task Provider Placeholder": {
+      "main": [[{ "node": "Build Signed Callback", "type": "main", "index": 0 }]]
+    },
+    "Draft Provider Placeholder": {
+      "main": [[{ "node": "Build Signed Callback", "type": "main", "index": 0 }]]
+    },
+    "Email Provider Placeholder": {
+      "main": [[{ "node": "Build Signed Callback", "type": "main", "index": 0 }]]
+    },
+    "CRM Status Placeholder": {
+      "main": [[{ "node": "Build Signed Callback", "type": "main", "index": 0 }]]
+    },
+    "Build Signed Callback": {
+      "main": [[{ "node": "Callback GTM AgentOS", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "b11ef845-2ae0-4d48-9e30-d3f8d71270e4",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

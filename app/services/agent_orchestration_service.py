@@ -21,6 +21,9 @@ from app.core.exceptions import (
     LLMProviderError,
     LLMTimeoutError,
     VectorSearchError,
+    ExternalActionConflictError,
+    ExternalActionInvalidError,
+    ExternalIntegrationError,
 )
 from app.repositories.agent_run_repository import AgentRunRepository
 from app.repositories.agent_state_transition_repository import (
@@ -41,6 +44,8 @@ from app.services.lead_service import LeadService
 from app.services.llm_service import LLMService
 from app.services.qualification_service import QualificationService
 from app.services.retrieval_service import RetrievalService
+from app.services.external_action_service import ExternalActionService
+from app.schemas.external_actions import ExternalActionType
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +56,8 @@ NextGraphNode = Literal[
     "research_state",
     "retrieve_gtm_knowledge",
     "build_research_context",
+    "draft_outreach_email",
+    "request_external_action",
     "nurture_state",
     "stop_state",
     "persist_agent_state",
@@ -68,6 +75,7 @@ class AgentOrchestrationService:
         retrieval_service: RetrievalService,
         rag_retrieval_repository: RagRetrievalRepository,
         llm_service: LLMService,
+        external_action_service: ExternalActionService | None = None,
     ) -> None:
         self._lead_service = LeadService(lead_repository)
         self._agent_run_repository = agent_run_repository
@@ -76,6 +84,7 @@ class AgentOrchestrationService:
         self._retrieval_service = retrieval_service
         self._rag_retrieval_repository = rag_retrieval_repository
         self._llm_service = llm_service
+        self._external_action_service = external_action_service
         self._graph = self._build_graph()
 
     def orchestrate(
@@ -133,6 +142,8 @@ class AgentOrchestrationService:
                 if final_state.route == AgentRoute.RESEARCH
                 else None
             ),
+            external_action_id=final_state.external_action_id,
+            external_action_status=final_state.external_action_status,
         )
 
     def load_lead_node(self, state: AgentState) -> dict[str, object]:
@@ -369,6 +380,127 @@ class AgentOrchestrationService:
             next_action=AgentNextAction.NURTURE_SEQUENCE,
         )
 
+    def draft_outreach_email_node(self, state: AgentState) -> dict[str, object]:
+        self._log_node(AgentStep.DRAFT_OUTREACH_EMAIL, state)
+        try:
+            if (
+                not state.retrieved_chunks
+                or not state.research_context
+                or state.research_context == "insufficient_internal_knowledge"
+            ):
+                raise AgentStateInvalidError(
+                    "Grounded research is required before drafting outreach"
+                )
+            draft = self._llm_service.draft_outreach_email(
+                state.payload,
+                state.research_context,
+                state.retrieved_chunks,
+            )
+            transition = self._transition(
+                state,
+                AgentStep.DRAFT_OUTREACH_EMAIL,
+                route=state.route,
+                payload={"draft_created": True},
+            )
+            return {
+                "email_draft": draft,
+                "current_step": AgentStep.DRAFT_OUTREACH_EMAIL,
+                "transitions": [*state.transitions, transition],
+            }
+        except GTMAgentOSError as exc:
+            return self._failed_node_update(
+                state, AgentStep.DRAFT_OUTREACH_EMAIL, exc.code
+            )
+        except Exception:
+            logger.exception(
+                "agent_graph_failed", extra={"node": "draft_outreach_email"}
+            )
+            return self._failed_node_update(
+                state,
+                AgentStep.DRAFT_OUTREACH_EMAIL,
+                AgentGraphExecutionError.code,
+            )
+
+    def request_external_action_node(
+        self, state: AgentState
+    ) -> dict[str, object]:
+        self._log_node(AgentStep.REQUEST_EXTERNAL_ACTION, state)
+        try:
+            if (
+                self._external_action_service is None
+                or state.lead_id is None
+                or state.agent_run_id is None
+                or state.route is None
+            ):
+                raise AgentStateInvalidError(
+                    "External action planning state is incomplete"
+                )
+
+            if state.route == AgentRoute.RESEARCH:
+                if state.email_draft is None:
+                    raise AgentStateInvalidError("HOT outreach draft is missing")
+                action_type = ExternalActionType.SEND_APPROVED_EMAIL
+                action_payload = {
+                    "lead_id": str(state.lead_id),
+                    "to_email": str(state.payload.email),
+                    **state.email_draft.model_dump(mode="json"),
+                }
+                campaign_step = "initial_outreach"
+            elif state.route == AgentRoute.NURTURE:
+                action_type = ExternalActionType.CREATE_FOLLOW_UP_TASK
+                action_payload = {
+                    "lead_id": str(state.lead_id),
+                    "title": f"Follow up with {state.payload.name}",
+                    "description": (
+                        f"Review nurture next steps for {state.payload.company}."
+                    ),
+                    "due_in_days": 3,
+                }
+                campaign_step = "nurture_initial"
+            else:
+                raise AgentRouteInvalidError(
+                    "COLD leads cannot request external actions"
+                )
+
+            action = self._external_action_service.request_action(
+                lead_id=state.lead_id,
+                agent_run_id=state.agent_run_id,
+                action_type=action_type,
+                payload=action_payload,
+                idempotency_key=(
+                    f"{state.lead_id}:{action_type.value}:{campaign_step}"
+                ),
+            )
+            transition = self._transition(
+                state,
+                AgentStep.REQUEST_EXTERNAL_ACTION,
+                route=state.route,
+                payload={
+                    "action_id": str(action.id),
+                    "action_type": action.action_type.value,
+                    "status": action.status.value,
+                },
+            )
+            return {
+                "external_action_id": action.id,
+                "external_action_status": action.status,
+                "current_step": AgentStep.REQUEST_EXTERNAL_ACTION,
+                "transitions": [*state.transitions, transition],
+            }
+        except GTMAgentOSError as exc:
+            return self._failed_node_update(
+                state, AgentStep.REQUEST_EXTERNAL_ACTION, exc.code
+            )
+        except Exception:
+            logger.exception(
+                "agent_graph_failed", extra={"node": "request_external_action"}
+            )
+            return self._failed_node_update(
+                state,
+                AgentStep.REQUEST_EXTERNAL_ACTION,
+                AgentGraphExecutionError.code,
+            )
+
     def stop_node(self, state: AgentState) -> dict[str, object]:
         return self._branch_node(
             state,
@@ -530,6 +662,8 @@ class AgentOrchestrationService:
         builder.add_node("research_state", self.research_node)
         builder.add_node("retrieve_gtm_knowledge", self.retrieve_knowledge_node)
         builder.add_node("build_research_context", self.build_research_context_node)
+        builder.add_node("draft_outreach_email", self.draft_outreach_email_node)
+        builder.add_node("request_external_action", self.request_external_action_node)
         builder.add_node("nurture_state", self.nurture_node)
         builder.add_node("stop_state", self.stop_node)
         builder.add_node("persist_agent_state", self.persist_state_node)
@@ -547,7 +681,11 @@ class AgentOrchestrationService:
         builder.add_conditional_edges(
             "build_research_context", self._after_research_context
         )
-        builder.add_edge("nurture_state", "persist_agent_state")
+        builder.add_conditional_edges("draft_outreach_email", self._after_draft)
+        builder.add_conditional_edges("nurture_state", self._after_nurture)
+        builder.add_conditional_edges(
+            "request_external_action", self._after_external_action
+        )
         builder.add_edge("stop_state", "persist_agent_state")
         builder.add_edge("persist_agent_state", END)
         return builder.compile()
@@ -580,8 +718,24 @@ class AgentOrchestrationService:
             else "build_research_context"
         )
 
+    def _after_research_context(self, state: AgentState) -> NextGraphNode:
+        if state.error:
+            return "persist_agent_state"
+        if self._external_action_service is not None and state.retrieved_chunks:
+            return "draft_outreach_email"
+        return "persist_agent_state"
+
     @staticmethod
-    def _after_research_context(state: AgentState) -> NextGraphNode:
+    def _after_draft(state: AgentState) -> NextGraphNode:
+        return "persist_agent_state" if state.error else "request_external_action"
+
+    def _after_nurture(self, state: AgentState) -> NextGraphNode:
+        if state.error or self._external_action_service is None:
+            return "persist_agent_state"
+        return "request_external_action"
+
+    @staticmethod
+    def _after_external_action(state: AgentState) -> NextGraphNode:
         return "persist_agent_state"
 
     @staticmethod
@@ -656,6 +810,13 @@ class AgentOrchestrationService:
             output["sources"] = [
                 source.model_dump(mode="json") for source in cls._sources(state)
             ]
+        if state.external_action_id is not None:
+            output["external_action_id"] = str(state.external_action_id)
+            output["external_action_status"] = (
+                state.external_action_status.value
+                if state.external_action_status
+                else None
+            )
         return output
 
     @staticmethod
@@ -703,6 +864,9 @@ class AgentOrchestrationService:
             EmbeddingProviderError.code: EmbeddingProviderError,
             EmbeddingInvalidResponseError.code: EmbeddingInvalidResponseError,
             VectorSearchError.code: VectorSearchError,
+            ExternalActionConflictError.code: ExternalActionConflictError,
+            ExternalActionInvalidError.code: ExternalActionInvalidError,
+            ExternalIntegrationError.code: ExternalIntegrationError,
         }
         error_type = error_types.get(error_code, AgentGraphExecutionError)
         raise error_type()

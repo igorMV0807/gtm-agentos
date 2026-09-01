@@ -1,6 +1,6 @@
 # GTM AgentOS
 
-GTM AgentOS is a portfolio-grade backend for AI-assisted go-to-market workflows. This repository contains **Phase 1: AI Lead Qualification Core**, **Phase 2: Agent Orchestration with LangGraph**, **Phase 3: RAG Knowledge Layer**, and **Phase 4: MCP & Controlled Agent Tools**.
+GTM AgentOS is a portfolio-grade backend for AI-assisted go-to-market workflows. This repository contains **Phase 1: AI Lead Qualification Core**, **Phase 2: Agent Orchestration with LangGraph**, **Phase 3: RAG Knowledge Layer**, **Phase 4: MCP & Controlled Agent Tools**, and **Phase 5: External Actions & n8n**.
 
 ## Problem
 
@@ -8,7 +8,7 @@ Revenue teams receive leads from multiple sources, but qualification is often in
 
 ## Solution
 
-The Phase 1 endpoint validates a lead, reuses an existing record when the same lead is submitted again, persists the lead in Supabase/PostgreSQL, asks Claude for a structured qualification, validates the result with Pydantic, stores the decision, and records the complete agent execution. Phase 2 adds a separate LangGraph endpoint that reuses this qualification service, applies deterministic routing, and records every state transition. Phase 3 grounds HOT-lead research in approved internal GTM documents retrieved with pgvector. Phase 4 exposes a small, read-only, schema-validated MCP tool surface over the same internal services and records every accepted or rejected execution attempt.
+The Phase 1 endpoint validates a lead, reuses an existing record when the same lead is submitted again, persists the lead in Supabase/PostgreSQL, asks Claude for a structured qualification, validates the result with Pydantic, stores the decision, and records the complete agent execution. Phase 2 adds a separate LangGraph endpoint that reuses this qualification service, applies deterministic routing, and records every state transition. Phase 3 grounds HOT-lead research in approved internal GTM documents retrieved with pgvector. Phase 4 exposes a small, read-only, schema-validated MCP tool surface over the same internal services and records every accepted or rejected execution attempt. Phase 5 turns safe agent decisions into allowlisted, approval-gated, idempotent actions dispatched to n8n with signed webhooks and auditable callbacks.
 
 The response contains:
 
@@ -27,7 +27,7 @@ app/
 │   └── state.py                    # Validated LangGraph state and transitions
 ├── api/
 │   ├── dependencies.py             # Composition root
-│   └── routes/                      # Existing lead and knowledge HTTP endpoints
+│   └── routes/                      # Lead, knowledge, approval, and callback endpoints
 ├── core/
 │   ├── config.py                   # Environment-based settings
 │   ├── exceptions.py               # Safe application errors
@@ -43,6 +43,10 @@ app/
 │   ├── execution.py                # Validation, sanitization, and audit boundary
 │   ├── schemas.py                  # Explicit tool input/output contracts
 │   └── tools/                      # Read-only lead, RAG, run, and analytics handlers
+├── integrations/
+│   ├── crm.py                      # CRM protocol + fixed-host HubSpot adapter
+│   ├── email.py                    # Email protocol + mandatory approval guard
+│   └── n8n.py                      # Signed, idempotent n8n dispatcher
 ├── repositories/
 │   ├── lead_repository.py          # Lead persistence interface + Supabase adapter
 │   ├── agent_run_repository.py     # Agent run interface + Supabase adapter
@@ -50,10 +54,12 @@ app/
 │   ├── rag_repository.py           # Vector RPC and evidence persistence
 │   ├── mcp_repository.py           # Controlled read-only tool queries
 │   ├── tool_call_repository.py     # Append-only sanitized tool audit
+│   ├── external_action_repository.py # Idempotent action lifecycle persistence
 │   └── agent_state_transition_repository.py
 ├── schemas/
 │   ├── lead.py                     # Input validation
 │   ├── knowledge.py                # Ingestion, retrieval, and source contracts
+│   ├── external_actions.py         # Closed action, callback, and draft schemas
 │   ├── qualification.py            # Structured LLM output and Phase 1 response
 │   └── orchestration.py            # Routes, actions, status, Phase 2 response
 └── services/
@@ -61,6 +67,7 @@ app/
     ├── chunking_service.py         # Deterministic word-window chunking
     ├── embedding_service.py        # Provider boundary + Voyage adapter
     ├── knowledge_ingestion_service.py
+    ├── external_action_service.py  # Approval, dispatch, callback, and audit policy
     ├── lead_service.py             # Idempotent lead ingestion
     ├── llm_service.py              # Provider boundary + Anthropic adapter
     ├── qualification_service.py    # End-to-end qualification
@@ -70,6 +77,8 @@ sql/001_initial_schema.sql          # Tables, constraints, indexes, RLS, grants
 sql/002_agent_state_transitions.sql # Immutable graph transition history
 sql/003_rag_knowledge_base.sql      # pgvector knowledge and RAG evidence
 sql/004_mcp_tool_calls.sql          # Immutable sanitized tool-call audit
+sql/005_external_actions.sql        # Approval-gated actions and immutable events
+n8n/gtm-agentos-actions.workflow.json # Credential-free demonstration workflow
 demo_knowledge/                     # Fictional portfolio knowledge documents
 tests/                              # External-service-free test suite
 ```
@@ -87,6 +96,7 @@ The service layer depends on repository, LLM, embedding, and tool interfaces rat
 - pgvector with cosine similarity and HNSW indexing
 - LangGraph 1.2
 - Official MCP Python SDK `2.1.1`
+- n8n as the external workflow execution layer
 - Pytest
 
 ## How It Works
@@ -456,9 +466,126 @@ Example MCP calls use structured arguments and results:
 
 An attempted `delete_lead` call is rejected as `unknown_tool`; there is no destructive handler to invoke.
 
+## Phase 5 — External Actions & n8n
+
+### Why n8n
+
+n8n is the external execution layer, not the system of record. GTM AgentOS keeps
+lead data, qualification, graph state, policy, idempotency, approval, and audit in
+the backend. n8n receives one already validated action, invokes the configured CRM
+or email provider, and returns a signed result. This keeps vendor workflow details
+outside the domain while preventing n8n from deciding what the agent is allowed to
+do.
+
+```text
+Agent
+  ↓
+Draft Action
+  ↓
+External Action
+  ↓
+Human Approval
+  ↓
+Signed n8n Webhook
+  ↓
+CRM / Email
+  ↓
+Signed Callback
+  ↓
+Audit
+  ↓
+Agent continues from persisted result
+```
+
+Only these action types exist in the API schema and database constraint:
+
+- `create_or_update_crm_lead`;
+- `create_follow_up_task`;
+- `draft_outreach_email`;
+- `send_approved_email`;
+- `mark_lead_status`.
+
+There is no generic action creation endpoint, arbitrary HTTP action, caller-provided
+URL, SQL, shell execution, or delete action. The public control endpoints can only
+approve or reject an action that already exists, or receive its signed result:
+
+```text
+POST /api/v1/actions/{action_id}/approve
+POST /api/v1/actions/{action_id}/reject
+POST /api/v1/integrations/n8n/callback
+```
+
+### Separation of responsibilities
+
+- LangGraph decides among application-owned graph edges; it does not call a CRM or
+  email provider directly.
+- Claude returns a strict `subject`, `body`, and public `reasoning_summary` using
+  only the lead, generated research context, and retrieved approved chunks.
+- `ExternalActionService` validates the closed payload schema, applies approval
+  policy, sanitizes stored data, and owns lifecycle transitions.
+- `N8nActionService` sends only to the configured `N8N_WEBHOOK_URL`; an LLM or
+  callback cannot replace that destination.
+- `CRMProvider` and `EmailProvider` keep vendor APIs outside domain and graph code.
+  The demonstration CRM adapter targets fixed HubSpot API paths.
+
+### Human approval and email safety
+
+A HOT lead with grounded RAG evidence receives a structured draft and one
+`send_approved_email` action in `pending` status. Draft creation never sends the
+message. The email guard accepts only a `send_approved_email` action whose
+`approved_at` is present and whose state has passed the approval gate. Rejection is
+terminal and does not invoke n8n. WARM creates a follow-up task proposal without an
+email; COLD creates no external action.
+
+### Idempotency
+
+Every action has a unique, bounded key derived from
+`lead_id:action_type:campaign_step`. The repository uses an idempotent database
+upsert and returns the existing row on duplicates. Approval is a conditional state
+transition, so repeated approval requests cannot dispatch an action already in
+`executing` or `completed`. A failed dispatch may be retried on the same row with
+the same key; it never creates a second email, CRM lead, or task record.
+
+### Signed webhooks and callbacks
+
+Outbound and callback messages use HMAC SHA-256 over `timestamp.raw_body`. The
+receiver requires `X-GTM-Timestamp` and `X-GTM-Signature`, compares signatures in
+constant time, and rejects timestamps outside a bounded replay window. The callback
+schema accepts only `action_id`, `completed|failed`, an optional external reference,
+and bounded metadata. It never trusts an inbound `action_type`: the service reloads
+the existing action by ID before applying a conditional transition.
+
+### External action audit trail
+
+`external_actions` stores the current action state, safe payload, approval and
+execution timestamps, stable idempotency key, provider reference, safe result, and
+error code. `external_action_events` is append-only and records requested, drafted,
+approved, rejected, started, callback-received, completed, and failed events. Both
+tables have RLS enabled; anonymous and authenticated roles have no grants, while the
+backend service role receives only the operations its repositories need. Token-,
+secret-, password-, cookie-, credential-, and authorization-shaped fields are
+redacted before audit or result persistence.
+
+### Demonstration n8n workflow
+
+Import `n8n/gtm-agentos-actions.workflow.json` into n8n, then configure these n8n
+environment variables:
+
+```dotenv
+N8N_WEBHOOK_SECRET=replace-with-a-long-random-shared-secret
+GTM_AGENTOS_CALLBACK_URL=https://agentos.example.com/api/v1/integrations/n8n/callback
+```
+
+The inactive workflow demonstrates Webhook Trigger → signature validation →
+allowlisted switch → CRM/email/task provider placeholder → signed callback. It has
+no embedded credentials and deliberately uses no real provider node. Replace only
+the provider placeholders when performing a separately authorized external
+integration validation; keep signature validation, allowlisting, idempotency, and
+callback signing intact.
+
 ## Database
 
-Run [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql), [`sql/002_agent_state_transitions.sql`](sql/002_agent_state_transitions.sql), [`sql/003_rag_knowledge_base.sql`](sql/003_rag_knowledge_base.sql), and [`sql/004_mcp_tool_calls.sql`](sql/004_mcp_tool_calls.sql) in order before starting the API or MCP server.
+Run [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql), [`sql/002_agent_state_transitions.sql`](sql/002_agent_state_transitions.sql), [`sql/003_rag_knowledge_base.sql`](sql/003_rag_knowledge_base.sql), [`sql/004_mcp_tool_calls.sql`](sql/004_mcp_tool_calls.sql), and [`sql/005_external_actions.sql`](sql/005_external_actions.sql) in order before starting the API or MCP server.
 
 The migration creates:
 
@@ -493,6 +620,17 @@ The Phase 4 migration adds:
 - RLS and explicit revocation from `public`, `anon`, and `authenticated`;
 - backend-only `SELECT` and `INSERT` privileges.
 
+The Phase 5 migration adds:
+
+- `external_actions` with a closed action/status allowlist, bounded JSONB fields,
+  unique idempotency keys, lifecycle consistency checks, and restrictive foreign keys;
+- append-only `external_action_events` for complete lifecycle auditing;
+- indexed lead, run, active-status, and event lookup paths;
+- the HOT draft and action-request states in graph transition constraints;
+- RLS and explicit revocation from `public`, `anon`, and `authenticated`;
+- service-role-only `SELECT`, `INSERT`, and conditional `UPDATE` for actions, and
+  `SELECT`/`INSERT` for immutable events. No role receives `DELETE`.
+
 `SUPABASE_KEY` must be a backend-only Supabase secret/service-role key. Never expose it in a browser or commit it to Git.
 
 ## Reliability
@@ -515,6 +653,11 @@ The Phase 4 migration adds:
 - Tool inputs and outputs are schema-validated before and after every handler.
 - Tool audit records are append-only and recursively redact credential-shaped fields.
 - No MCP tool accepts SQL, table names, shell commands, file paths, arbitrary URLs, or code.
+- External action payloads are selected from a closed schema map and size-bounded.
+- Sensitive email/CRM execution requires an explicit, persisted approval transition.
+- Stable idempotency keys and conditional updates prevent duplicate dispatch.
+- n8n webhook requests and callbacks use HMAC signatures and a replay window.
+- Provider URLs come only from configuration; action and model payloads cannot set them.
 
 ## Running Locally
 
@@ -545,7 +688,7 @@ Requirements: Python 3.12 and a Supabase project.
    `requirements.txt` lists the direct dependencies; `requirements.lock` pins the
    complete tested dependency graph for reproducible installations.
 
-3. Create the database objects by running `sql/001_initial_schema.sql`, `sql/002_agent_state_transitions.sql`, `sql/003_rag_knowledge_base.sql`, and `sql/004_mcp_tool_calls.sql` in order in the Supabase SQL Editor.
+3. Create the database objects by running `sql/001_initial_schema.sql`, `sql/002_agent_state_transitions.sql`, `sql/003_rag_knowledge_base.sql`, `sql/004_mcp_tool_calls.sql`, and `sql/005_external_actions.sql` in order in the Supabase SQL Editor.
 
 4. Copy `.env.example` to `.env` and configure:
 
@@ -563,7 +706,15 @@ Requirements: Python 3.12 and a Supabase project.
    RAG_SIMILARITY_THRESHOLD=0.40
    RAG_CHUNK_SIZE_WORDS=160
    RAG_CHUNK_OVERLAP_WORDS=24
+   N8N_WEBHOOK_URL=https://your-n8n.example/webhook/gtm-agentos-actions
+   N8N_WEBHOOK_SECRET=replace-with-a-long-random-shared-secret
+   CRM_PROVIDER=hubspot
+   HUBSPOT_ACCESS_TOKEN=
    ```
+
+   `HUBSPOT_ACCESS_TOKEN` is optional until the HubSpot adapter is intentionally
+   used. Keep all provider credentials server-side. The API requires HTTPS for the
+   n8n URL except when it explicitly targets localhost.
 
 5. Start the API.
 
@@ -631,6 +782,14 @@ Covered behavior includes:
 - completed, failed, and rejected tool-call audit records;
 - secret redaction from logs and stored audit payloads;
 - continued compatibility of the Phase 1–3 HTTP endpoints.
+- allowlisted external action creation and strict payload rejection;
+- human approval, rejection, single dispatch, safe failure, and retry behavior;
+- unique action idempotency and duplicate approval protection;
+- valid, invalid, and stale HMAC signatures plus strict callback schemas;
+- credential redaction from nested callback metadata;
+- CRM and n8n adapter requests through local recording fakes;
+- structured HOT email drafts, WARM task planning, and COLD no-action behavior;
+- continued compatibility of the Phase 1–4 behavior without external calls.
 
 ## Roadmap
 
@@ -638,7 +797,8 @@ Covered behavior includes:
 - **Phase 2 — Agent orchestration with LangGraph** (completed)
 - **Phase 3 — RAG + PostgreSQL/pgvector** (completed)
 - **Phase 4 — Tools + MCP Server** (completed)
-- **Phase 5 — n8n + CRM + email integrations**
+- **Phase 5 — n8n + CRM + email integrations** (completed locally with fakes)
 - **Phase 6 — Observability + Human-in-the-loop + dashboard**
 
-No Phase 5+ functionality is implemented in this codebase.
+Phase 5 has not been validated against real n8n, HubSpot, or email accounts. No
+Phase 6 functionality is implemented in this codebase.

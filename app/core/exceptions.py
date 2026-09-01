@@ -126,3 +126,39 @@ class AgentRunNotFoundError(GTMAgentOSError):
     status_code = 404
     code = "agent_run_not_found"
     public_message = "The requested agent run was not found"
+
+
+class ExternalActionNotFoundError(GTMAgentOSError):
+    status_code = 404
+    code = "external_action_not_found"
+    public_message = "The requested external action was not found"
+
+
+class ExternalActionConflictError(GTMAgentOSError):
+    status_code = 409
+    code = "external_action_conflict"
+    public_message = "The external action cannot transition from its current state"
+
+
+class ExternalActionInvalidError(GTMAgentOSError):
+    status_code = 422
+    code = "invalid_external_action"
+    public_message = "The external action is invalid"
+
+
+class ExternalIntegrationError(GTMAgentOSError):
+    status_code = 502
+    code = "external_integration_failed"
+    public_message = "The external integration could not complete the action"
+
+
+class WebhookSignatureInvalidError(GTMAgentOSError):
+    status_code = 401
+    code = "invalid_webhook_signature"
+    public_message = "The webhook signature is invalid"
+
+
+class WebhookReplayError(GTMAgentOSError):
+    status_code = 401
+    code = "stale_webhook_request"
+    public_message = "The webhook request is outside the accepted time window"

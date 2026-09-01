@@ -25,6 +25,11 @@ from app.repositories.tool_call_repository import (
     SupabaseToolCallRepository,
     ToolCallRepository,
 )
+from app.integrations.n8n import N8nActionService, WebhookSigner
+from app.repositories.external_action_repository import (
+    ExternalActionRepository,
+    SupabaseExternalActionRepository,
+)
 from app.services.agent_orchestration_service import AgentOrchestrationService
 from app.services.chunking_service import TextChunker
 from app.services.embedding_service import EmbeddingProvider, build_embedding_provider
@@ -32,6 +37,7 @@ from app.services.knowledge_ingestion_service import KnowledgeIngestionService
 from app.services.llm_service import LLMService, build_llm_service
 from app.services.qualification_service import QualificationService
 from app.services.retrieval_service import RetrievalService
+from app.services.external_action_service import ExternalActionService
 
 
 @lru_cache
@@ -76,6 +82,11 @@ def get_mcp_data_repository() -> MCPDataRepository:
 @lru_cache
 def get_tool_call_repository() -> ToolCallRepository:
     return SupabaseToolCallRepository(get_supabase_client())
+
+
+@lru_cache
+def get_external_action_repository() -> ExternalActionRepository:
+    return SupabaseExternalActionRepository(get_supabase_client())
 
 
 @lru_cache
@@ -129,6 +140,40 @@ def get_tool_execution_service() -> ToolExecutionService:
 
 
 @lru_cache
+def get_webhook_signer() -> WebhookSigner:
+    settings = get_settings()
+    _, secret = settings.require_n8n()
+    return WebhookSigner(
+        secret,
+        max_age_seconds=settings.n8n_signature_max_age_seconds,
+    )
+
+
+@lru_cache
+def get_n8n_action_service() -> N8nActionService:
+    settings = get_settings()
+    webhook_url, _ = settings.require_n8n()
+    return N8nActionService(
+        webhook_url=webhook_url,
+        signer=get_webhook_signer(),
+        timeout_seconds=settings.n8n_timeout_seconds,
+    )
+
+
+@lru_cache
+def get_external_action_request_service() -> ExternalActionService:
+    return ExternalActionService(repository=get_external_action_repository())
+
+
+@lru_cache
+def get_external_action_service() -> ExternalActionService:
+    return ExternalActionService(
+        repository=get_external_action_repository(),
+        n8n_dispatcher=get_n8n_action_service(),
+    )
+
+
+@lru_cache
 def get_qualification_service() -> QualificationService:
     return QualificationService(
         lead_repository=get_lead_repository(),
@@ -147,4 +192,5 @@ def get_agent_orchestration_service() -> AgentOrchestrationService:
         retrieval_service=get_retrieval_service(),
         rag_retrieval_repository=get_rag_repository(),
         llm_service=get_llm_service(),
+        external_action_service=get_external_action_request_service(),
     )

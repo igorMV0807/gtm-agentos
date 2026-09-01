@@ -9,6 +9,7 @@ from app.schemas.knowledge import RetrievedChunk
 from app.schemas.lead import LeadQualifyRequest
 from app.schemas.orchestration import AgentNextAction, AgentRoute, AgentStatus
 from app.schemas.qualification import LeadClassification, QualificationResult
+from app.schemas.external_actions import EmailDraft, ExternalActionStatus
 
 
 class AgentStep(str, Enum):
@@ -19,6 +20,8 @@ class AgentStep(str, Enum):
     RESEARCH_STATE = "research_state"
     RETRIEVE_GTM_KNOWLEDGE = "retrieve_gtm_knowledge"
     BUILD_RESEARCH_CONTEXT = "build_research_context"
+    DRAFT_OUTREACH_EMAIL = "draft_outreach_email"
+    REQUEST_EXTERNAL_ACTION = "request_external_action"
     NURTURE_STATE = "nurture_state"
     STOP_STATE = "stop_state"
     PERSIST_AGENT_STATE = "persist_agent_state"
@@ -49,6 +52,9 @@ class AgentState(BaseModel):
     retrieval_query: str | None = None
     retrieved_chunks: list[RetrievedChunk] = Field(default_factory=list)
     research_context: str | None = None
+    email_draft: EmailDraft | None = None
+    external_action_id: UUID | None = None
+    external_action_status: ExternalActionStatus | None = None
     status: AgentStatus = AgentStatus.STARTED
     error: str | None = None
     transitions: list[AgentStateTransition] = Field(default_factory=list)

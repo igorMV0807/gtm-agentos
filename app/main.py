@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes.leads import router as leads_router
 from app.api.routes.knowledge import router as knowledge_router
+from app.api.routes.actions import router as actions_router
+from app.api.routes.integrations import router as integrations_router
 from app.core.exceptions import GTMAgentOSError
 from app.core.logging import configure_logging
 
@@ -14,14 +16,16 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="GTM AgentOS",
-    version="0.4.0",
+    version="0.5.0",
     description=(
         "Lead qualification, LangGraph orchestration, grounded GTM RAG, and "
-        "controlled MCP tools"
+        "controlled MCP tools, and approval-gated external actions"
     ),
 )
 app.include_router(leads_router)
 app.include_router(knowledge_router)
+app.include_router(actions_router)
+app.include_router(integrations_router)
 
 
 @app.get("/health", tags=["health"])

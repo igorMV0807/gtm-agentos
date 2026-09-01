@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.qualification import LeadClassification
 from app.schemas.knowledge import ResearchSource
+from app.schemas.external_actions import ExternalActionStatus
 
 
 class AgentRoute(str, Enum):
@@ -36,5 +37,7 @@ class AgentOrchestrationResponse(BaseModel):
     status: AgentStatus
     research_context: str | None = None
     sources: list[ResearchSource] | None = None
+    external_action_id: UUID | None = None
+    external_action_status: ExternalActionStatus | None = None
 
     model_config = ConfigDict(extra="forbid")
