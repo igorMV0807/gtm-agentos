@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.lead import LeadRecord
+from app.schemas.knowledge import RetrievedChunk
 from app.schemas.lead import LeadQualifyRequest
 from app.schemas.orchestration import AgentNextAction, AgentRoute, AgentStatus
 from app.schemas.qualification import LeadClassification, QualificationResult
@@ -16,6 +17,8 @@ class AgentStep(str, Enum):
     QUALIFY_LEAD = "qualify_lead"
     ROUTE_BY_CLASSIFICATION = "route_by_classification"
     RESEARCH_STATE = "research_state"
+    RETRIEVE_GTM_KNOWLEDGE = "retrieve_gtm_knowledge"
+    BUILD_RESEARCH_CONTEXT = "build_research_context"
     NURTURE_STATE = "nurture_state"
     STOP_STATE = "stop_state"
     PERSIST_AGENT_STATE = "persist_agent_state"
@@ -43,6 +46,9 @@ class AgentState(BaseModel):
     next_action: AgentNextAction | None = None
     current_step: AgentStep = AgentStep.START
     route: AgentRoute | None = None
+    retrieval_query: str | None = None
+    retrieved_chunks: list[RetrievedChunk] = Field(default_factory=list)
+    research_context: str | None = None
     status: AgentStatus = AgentStatus.STARTED
     error: str | None = None
     transitions: list[AgentStateTransition] = Field(default_factory=list)

@@ -13,25 +13,34 @@ from app.core.exceptions import (
     AgentRouteInvalidError,
     AgentStateInvalidError,
     DatabaseUnavailableError,
+    EmbeddingInvalidResponseError,
+    EmbeddingProviderError,
+    EmbeddingTimeoutError,
     GTMAgentOSError,
     LLMInvalidResponseError,
     LLMProviderError,
     LLMTimeoutError,
+    VectorSearchError,
 )
 from app.repositories.agent_run_repository import AgentRunRepository
 from app.repositories.agent_state_transition_repository import (
     AgentStateTransitionRepository,
 )
 from app.repositories.lead_repository import LeadRepository
+from app.repositories.rag_repository import RagRetrievalRepository
+from app.schemas.knowledge import ResearchSource
 from app.schemas.lead import LeadQualifyRequest
 from app.schemas.orchestration import (
     AgentNextAction,
     AgentOrchestrationResponse,
+    AgentRoute,
     AgentStatus,
 )
 from app.schemas.qualification import QualificationResult
 from app.services.lead_service import LeadService
+from app.services.llm_service import LLMService
 from app.services.qualification_service import QualificationService
+from app.services.retrieval_service import RetrievalService
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +49,8 @@ NextGraphNode = Literal[
     "qualify_lead",
     "route_by_classification",
     "research_state",
+    "retrieve_gtm_knowledge",
+    "build_research_context",
     "nurture_state",
     "stop_state",
     "persist_agent_state",
@@ -54,11 +65,17 @@ class AgentOrchestrationService:
         agent_run_repository: AgentRunRepository,
         transition_repository: AgentStateTransitionRepository,
         qualification_service: QualificationService,
+        retrieval_service: RetrievalService,
+        rag_retrieval_repository: RagRetrievalRepository,
+        llm_service: LLMService,
     ) -> None:
         self._lead_service = LeadService(lead_repository)
         self._agent_run_repository = agent_run_repository
         self._transition_repository = transition_repository
         self._qualification_service = qualification_service
+        self._retrieval_service = retrieval_service
+        self._rag_retrieval_repository = rag_retrieval_repository
+        self._llm_service = llm_service
         self._graph = self._build_graph()
 
     def orchestrate(
@@ -110,6 +127,12 @@ class AgentOrchestrationService:
             route=final_state.route,
             next_action=final_state.next_action,
             status=final_state.status,
+            research_context=final_state.research_context,
+            sources=(
+                self._sources(final_state)
+                if final_state.route == AgentRoute.RESEARCH
+                else None
+            ),
         )
 
     def load_lead_node(self, state: AgentState) -> dict[str, object]:
@@ -244,6 +267,101 @@ class AgentOrchestrationService:
             next_action=AgentNextAction.RESEARCH_COMPANY,
         )
 
+    def retrieve_knowledge_node(self, state: AgentState) -> dict[str, object]:
+        self._log_node(AgentStep.RETRIEVE_GTM_KNOWLEDGE, state)
+        try:
+            query = self._retrieval_service.build_lead_query(state.payload)
+            chunks = self._retrieval_service.search(query)
+            transition = self._transition(
+                state,
+                AgentStep.RETRIEVE_GTM_KNOWLEDGE,
+                route=state.route,
+                payload={"result_count": len(chunks)},
+            )
+            return {
+                "retrieval_query": query,
+                "retrieved_chunks": chunks,
+                "current_step": AgentStep.RETRIEVE_GTM_KNOWLEDGE,
+                "transitions": [*state.transitions, transition],
+            }
+        except GTMAgentOSError as exc:
+            logger.warning(
+                "rag_failed",
+                extra={"operation": "retrieval", "error_code": exc.code},
+            )
+            return self._failed_node_update(
+                state, AgentStep.RETRIEVE_GTM_KNOWLEDGE, exc.code
+            )
+        except Exception:
+            logger.exception("rag_failed", extra={"operation": "retrieval"})
+            return self._failed_node_update(
+                state,
+                AgentStep.RETRIEVE_GTM_KNOWLEDGE,
+                AgentGraphExecutionError.code,
+            )
+
+    def build_research_context_node(
+        self, state: AgentState
+    ) -> dict[str, object]:
+        self._log_node(AgentStep.BUILD_RESEARCH_CONTEXT, state)
+        try:
+            if not state.retrieved_chunks:
+                research_context = "insufficient_internal_knowledge"
+                logger.info(
+                    "rag_no_relevant_context",
+                    extra={
+                        "lead_id": self._safe_uuid(state.lead_id),
+                        "agent_run_id": self._safe_uuid(state.agent_run_id),
+                    },
+                )
+            else:
+                research_context = self._llm_service.build_research_context(
+                    state.payload,
+                    state.retrieved_chunks,
+                )
+                logger.info(
+                    "research_context_generated",
+                    extra={
+                        "lead_id": self._safe_uuid(state.lead_id),
+                        "agent_run_id": self._safe_uuid(state.agent_run_id),
+                        "source_count": len(state.retrieved_chunks),
+                    },
+                )
+            transition = self._transition(
+                state,
+                AgentStep.BUILD_RESEARCH_CONTEXT,
+                route=state.route,
+                payload={
+                    "source_count": len(state.retrieved_chunks),
+                    "fallback": not state.retrieved_chunks,
+                },
+            )
+            return {
+                "research_context": research_context,
+                "current_step": AgentStep.BUILD_RESEARCH_CONTEXT,
+                "transitions": [*state.transitions, transition],
+            }
+        except GTMAgentOSError as exc:
+            logger.warning(
+                "rag_failed",
+                extra={
+                    "operation": "research_context",
+                    "error_code": exc.code,
+                },
+            )
+            return self._failed_node_update(
+                state, AgentStep.BUILD_RESEARCH_CONTEXT, exc.code
+            )
+        except Exception:
+            logger.exception(
+                "rag_failed", extra={"operation": "research_context"}
+            )
+            return self._failed_node_update(
+                state,
+                AgentStep.BUILD_RESEARCH_CONTEXT,
+                AgentGraphExecutionError.code,
+            )
+
     def nurture_node(self, state: AgentState) -> dict[str, object]:
         return self._branch_node(
             state,
@@ -264,33 +382,45 @@ class AgentOrchestrationService:
         if not error and not self._has_complete_result(state):
             error = AgentStateInvalidError.code
 
-        final_status = AgentStatus.FAILED if error else AgentStatus.COMPLETED
-        persist_transition = self._transition(
-            state,
-            AgentStep.PERSIST_AGENT_STATE,
-            payload={"status": final_status.value, "error": error},
-        )
-        end_transition = AgentStateTransition(
-            from_state=AgentStep.PERSIST_AGENT_STATE,
-            to_state=AgentStep.END,
-            route=state.route,
-            payload={"status": final_status.value, "error": error},
-        )
-        transitions = [
-            *state.transitions,
-            persist_transition,
-            end_transition,
-        ]
-
         if state.agent_run_id is None or state.lead_id is None:
+            error = error or AgentStateInvalidError.code
+            transitions = self._final_transitions(state, error=error)
             return {
                 "current_step": AgentStep.END,
                 "status": AgentStatus.FAILED,
-                "error": error or AgentStateInvalidError.code,
+                "error": error,
                 "transitions": transitions,
             }
 
         latency_ms = self._latency_ms(state.started_at)
+        if not error and state.retrieved_chunks:
+            try:
+                evidence = self._rag_retrieval_repository.create_many(
+                    agent_run_id=state.agent_run_id,
+                    lead_id=state.lead_id,
+                    query=state.retrieval_query or "",
+                    chunks=state.retrieved_chunks,
+                )
+                logger.info(
+                    "rag_evidence_persisted",
+                    extra={
+                        "lead_id": str(state.lead_id),
+                        "agent_run_id": str(state.agent_run_id),
+                        "evidence_count": len(evidence),
+                    },
+                )
+            except GTMAgentOSError as exc:
+                error = exc.code
+                logger.warning(
+                    "rag_failed",
+                    extra={"operation": "evidence", "error_code": exc.code},
+                )
+            except Exception:
+                error = AgentGraphExecutionError.code
+                logger.exception("rag_failed", extra={"operation": "evidence"})
+
+        final_status = AgentStatus.FAILED if error else AgentStatus.COMPLETED
+        transitions = self._final_transitions(state, error=error)
         try:
             persisted = self._transition_repository.create_many(
                 agent_run_id=state.agent_run_id,
@@ -352,6 +482,24 @@ class AgentOrchestrationService:
             "transitions": transitions,
         }
 
+    @classmethod
+    def _final_transitions(
+        cls, state: AgentState, *, error: str | None
+    ) -> list[AgentStateTransition]:
+        final_status = AgentStatus.FAILED if error else AgentStatus.COMPLETED
+        persist_transition = cls._transition(
+            state,
+            AgentStep.PERSIST_AGENT_STATE,
+            payload={"status": final_status.value, "error": error},
+        )
+        end_transition = AgentStateTransition(
+            from_state=AgentStep.PERSIST_AGENT_STATE,
+            to_state=AgentStep.END,
+            route=state.route,
+            payload={"status": final_status.value, "error": error},
+        )
+        return [*state.transitions, persist_transition, end_transition]
+
     def _branch_node(
         self,
         state: AgentState,
@@ -380,6 +528,8 @@ class AgentOrchestrationService:
             "route_by_classification", self.route_by_classification_node
         )
         builder.add_node("research_state", self.research_node)
+        builder.add_node("retrieve_gtm_knowledge", self.retrieve_knowledge_node)
+        builder.add_node("build_research_context", self.build_research_context_node)
         builder.add_node("nurture_state", self.nurture_node)
         builder.add_node("stop_state", self.stop_node)
         builder.add_node("persist_agent_state", self.persist_state_node)
@@ -390,7 +540,13 @@ class AgentOrchestrationService:
         builder.add_conditional_edges(
             "route_by_classification", self._after_routing
         )
-        builder.add_edge("research_state", "persist_agent_state")
+        builder.add_edge("research_state", "retrieve_gtm_knowledge")
+        builder.add_conditional_edges(
+            "retrieve_gtm_knowledge", self._after_retrieval
+        )
+        builder.add_conditional_edges(
+            "build_research_context", self._after_research_context
+        )
         builder.add_edge("nurture_state", "persist_agent_state")
         builder.add_edge("stop_state", "persist_agent_state")
         builder.add_edge("persist_agent_state", END)
@@ -415,6 +571,18 @@ class AgentOrchestrationService:
         if state.route is None:
             raise AgentRouteInvalidError("Agent route is missing")
         return route_to_node(state.route)
+
+    @staticmethod
+    def _after_retrieval(state: AgentState) -> NextGraphNode:
+        return (
+            "persist_agent_state"
+            if state.error
+            else "build_research_context"
+        )
+
+    @staticmethod
+    def _after_research_context(state: AgentState) -> NextGraphNode:
+        return "persist_agent_state"
 
     @staticmethod
     def _transition(
@@ -473,9 +641,9 @@ class AgentOrchestrationService:
                 extra={"agent_run_id": str(run_id)},
             )
 
-    @staticmethod
-    def _run_output(state: AgentState) -> dict[str, object]:
-        return {
+    @classmethod
+    def _run_output(cls, state: AgentState) -> dict[str, object]:
+        output: dict[str, object] = {
             "score": state.score,
             "classification": state.classification.value,
             "reason": state.reason,
@@ -483,10 +651,16 @@ class AgentOrchestrationService:
             "next_action": state.next_action.value,
             "status": AgentStatus.COMPLETED.value,
         }
+        if state.route == AgentRoute.RESEARCH:
+            output["research_context"] = state.research_context
+            output["sources"] = [
+                source.model_dump(mode="json") for source in cls._sources(state)
+            ]
+        return output
 
     @staticmethod
     def _has_complete_result(state: AgentState) -> bool:
-        return all(
+        base_complete = all(
             value is not None
             for value in (
                 state.lead_id,
@@ -499,6 +673,14 @@ class AgentOrchestrationService:
                 state.next_action,
             )
         )
+        if not base_complete:
+            return False
+        if state.route == AgentRoute.RESEARCH:
+            return (
+                state.retrieval_query is not None
+                and state.research_context is not None
+            )
+        return True
 
     @classmethod
     def _has_complete_response(cls, state: AgentState) -> bool:
@@ -517,9 +699,25 @@ class AgentOrchestrationService:
             AgentStateInvalidError.code: AgentStateInvalidError,
             AgentRouteInvalidError.code: AgentRouteInvalidError,
             AgentGraphExecutionError.code: AgentGraphExecutionError,
+            EmbeddingTimeoutError.code: EmbeddingTimeoutError,
+            EmbeddingProviderError.code: EmbeddingProviderError,
+            EmbeddingInvalidResponseError.code: EmbeddingInvalidResponseError,
+            VectorSearchError.code: VectorSearchError,
         }
         error_type = error_types.get(error_code, AgentGraphExecutionError)
         raise error_type()
+
+    @staticmethod
+    def _sources(state: AgentState) -> list[ResearchSource]:
+        return [
+            ResearchSource(
+                document_id=chunk.document_id,
+                chunk_id=chunk.chunk_id,
+                title=chunk.title,
+                similarity=chunk.similarity,
+            )
+            for chunk in state.retrieved_chunks
+        ]
 
     @staticmethod
     def _latency_ms(started_at: float) -> int:

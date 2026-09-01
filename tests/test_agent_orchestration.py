@@ -102,7 +102,12 @@ def test_state_transitions_are_persisted(
         (AgentStep.LOAD_LEAD, AgentStep.QUALIFY_LEAD),
         (AgentStep.QUALIFY_LEAD, AgentStep.ROUTE_BY_CLASSIFICATION),
         (AgentStep.ROUTE_BY_CLASSIFICATION, AgentStep.RESEARCH_STATE),
-        (AgentStep.RESEARCH_STATE, AgentStep.PERSIST_AGENT_STATE),
+        (AgentStep.RESEARCH_STATE, AgentStep.RETRIEVE_GTM_KNOWLEDGE),
+        (
+            AgentStep.RETRIEVE_GTM_KNOWLEDGE,
+            AgentStep.BUILD_RESEARCH_CONTEXT,
+        ),
+        (AgentStep.BUILD_RESEARCH_CONTEXT, AgentStep.PERSIST_AGENT_STATE),
         (AgentStep.PERSIST_AGENT_STATE, AgentStep.END),
     ]
     assert {str(item.agent_run_id) for item in transitions} == {
@@ -142,6 +147,8 @@ def test_agent_endpoint_returns_expected_structure(
         "route",
         "next_action",
         "status",
+        "research_context",
+        "sources",
     }
     assert response.json()["status"] == "completed"
     assert _orchestration_run(context).status == "completed"

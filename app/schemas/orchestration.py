@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.qualification import LeadClassification
+from app.schemas.knowledge import ResearchSource
 
 
 class AgentRoute(str, Enum):
@@ -33,5 +34,7 @@ class AgentOrchestrationResponse(BaseModel):
     route: AgentRoute
     next_action: AgentNextAction
     status: AgentStatus
+    research_context: str | None = None
+    sources: list[ResearchSource] | None = None
 
     model_config = ConfigDict(extra="forbid")

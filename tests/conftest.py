@@ -13,7 +13,9 @@ from app.api.dependencies import (
 from app.core.exceptions import GTMAgentOSError
 from app.main import app
 from app.models.lead import AgentRunRecord, LeadRecord
+from app.models.knowledge import RagRetrievalRecord
 from app.models.orchestration import AgentStateTransitionRecord
+from app.schemas.knowledge import RetrievedChunk
 from app.schemas.lead import LeadQualifyRequest
 from app.schemas.qualification import (
     LeadClassification,
@@ -22,6 +24,7 @@ from app.schemas.qualification import (
 )
 from app.services.agent_orchestration_service import AgentOrchestrationService
 from app.services.qualification_service import QualificationService
+from app.services.retrieval_service import RetrievalService
 
 
 class InMemoryLeadRepository:
@@ -193,12 +196,82 @@ class FakeLLMService:
         )
         self.error: GTMAgentOSError | None = None
         self.calls = 0
+        self.research_calls = 0
+        self.research_chunks: list[RetrievedChunk] = []
+        self.research_context = "Grounded internal GTM research context."
+        self.research_error: GTMAgentOSError | None = None
 
     def qualify(self, lead: LeadQualifyRequest) -> QualificationResult:
         self.calls += 1
         if self.error:
             raise self.error
         return self.result
+
+    def build_research_context(
+        self, lead: LeadQualifyRequest, chunks: list[RetrievedChunk]
+    ) -> str:
+        self.research_calls += 1
+        self.research_chunks = chunks
+        if self.research_error:
+            raise self.research_error
+        return self.research_context
+
+
+class FakeRetrievalService:
+    def __init__(self) -> None:
+        self.results = [
+            RetrievedChunk(
+                document_id=uuid4(),
+                chunk_id=uuid4(),
+                title="Ideal Customer Profile",
+                content="Heads of Sales at B2B SaaS companies are priority buyers.",
+                similarity=0.91,
+                metadata={"document_type": "icp"},
+            )
+        ]
+        self.calls: list[str] = []
+        self.error: GTMAgentOSError | None = None
+
+    def search(self, query: str, *, top_k: int | None = None) -> list[RetrievedChunk]:
+        self.calls.append(query)
+        if self.error:
+            raise self.error
+        return self.results
+
+    @staticmethod
+    def build_lead_query(lead: LeadQualifyRequest) -> str:
+        return RetrievalService.build_lead_query(lead)
+
+
+class InMemoryRagRetrievalRepository:
+    def __init__(self) -> None:
+        self.retrievals: list[RagRetrievalRecord] = []
+        self.error: GTMAgentOSError | None = None
+
+    def create_many(
+        self,
+        *,
+        agent_run_id: UUID,
+        lead_id: UUID,
+        query: str,
+        chunks: list[RetrievedChunk],
+    ) -> list[RagRetrievalRecord]:
+        if self.error:
+            raise self.error
+        records = [
+            RagRetrievalRecord(
+                id=uuid4(),
+                agent_run_id=agent_run_id,
+                lead_id=lead_id,
+                query=query,
+                chunk_id=chunk.chunk_id,
+                similarity=chunk.similarity,
+                rank=rank,
+            )
+            for rank, chunk in enumerate(chunks, start=1)
+        ]
+        self.retrievals.extend(records)
+        return records
 
 
 @dataclass
@@ -208,6 +281,8 @@ class ScenarioContext:
     runs: InMemoryAgentRunRepository
     transitions: InMemoryAgentStateTransitionRepository
     llm: FakeLLMService
+    retrieval: FakeRetrievalService
+    rag_evidence: InMemoryRagRetrievalRepository
 
 
 @pytest.fixture
@@ -216,6 +291,8 @@ def context() -> Iterator[ScenarioContext]:
     agent_run_repository = InMemoryAgentRunRepository()
     transition_repository = InMemoryAgentStateTransitionRepository()
     llm_service = FakeLLMService()
+    retrieval_service = FakeRetrievalService()
+    rag_retrieval_repository = InMemoryRagRetrievalRepository()
     qualification_service = QualificationService(
         lead_repository=lead_repository,
         agent_run_repository=agent_run_repository,
@@ -226,6 +303,9 @@ def context() -> Iterator[ScenarioContext]:
         agent_run_repository=agent_run_repository,
         transition_repository=transition_repository,
         qualification_service=qualification_service,
+        retrieval_service=retrieval_service,
+        rag_retrieval_repository=rag_retrieval_repository,
+        llm_service=llm_service,
     )
 
     app.dependency_overrides[get_qualification_service] = lambda: qualification_service
@@ -239,6 +319,8 @@ def context() -> Iterator[ScenarioContext]:
             agent_run_repository,
             transition_repository,
             llm_service,
+            retrieval_service,
+            rag_retrieval_repository,
         )
     app.dependency_overrides.clear()
 

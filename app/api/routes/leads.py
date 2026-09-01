@@ -31,6 +31,7 @@ def qualify_lead(
 @router.post(
     "/agent",
     response_model=AgentOrchestrationResponse,
+    response_model_exclude_none=True,
     summary="Run the deterministic lead orchestration graph",
 )
 def orchestrate_lead(

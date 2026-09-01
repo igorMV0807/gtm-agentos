@@ -60,3 +60,33 @@ class AgentGraphExecutionError(GTMAgentOSError):
     status_code = 500
     code = "agent_graph_error"
     public_message = "The agent workflow could not be completed"
+
+
+class EmbeddingTimeoutError(GTMAgentOSError):
+    status_code = 504
+    code = "embedding_timeout"
+    public_message = "The embedding provider timed out"
+
+
+class EmbeddingProviderError(GTMAgentOSError):
+    status_code = 502
+    code = "embedding_provider_error"
+    public_message = "The embedding provider is temporarily unavailable"
+
+
+class EmbeddingInvalidResponseError(GTMAgentOSError):
+    status_code = 502
+    code = "embedding_invalid_response"
+    public_message = "The embedding provider returned an invalid response"
+
+
+class VectorSearchError(GTMAgentOSError):
+    status_code = 503
+    code = "vector_search_failed"
+    public_message = "The internal knowledge search is temporarily unavailable"
+
+
+class KnowledgeIngestionError(GTMAgentOSError):
+    status_code = 500
+    code = "knowledge_ingestion_failed"
+    public_message = "The knowledge document could not be ingested"

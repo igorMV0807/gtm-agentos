@@ -1,6 +1,6 @@
 # GTM AgentOS
 
-GTM AgentOS is a portfolio-grade backend for AI-assisted go-to-market workflows. This repository contains **Phase 1: AI Lead Qualification Core** and **Phase 2: Agent Orchestration with LangGraph**.
+GTM AgentOS is a portfolio-grade backend for AI-assisted go-to-market workflows. This repository contains **Phase 1: AI Lead Qualification Core**, **Phase 2: Agent Orchestration with LangGraph**, and **Phase 3: RAG Knowledge Layer**.
 
 ## Problem
 
@@ -8,7 +8,7 @@ Revenue teams receive leads from multiple sources, but qualification is often in
 
 ## Solution
 
-The Phase 1 endpoint validates a lead, reuses an existing record when the same lead is submitted again, persists the lead in Supabase/PostgreSQL, asks Claude for a structured qualification, validates the result with Pydantic, stores the decision, and records the complete agent execution. Phase 2 adds a separate LangGraph endpoint that reuses this qualification service, applies deterministic routing, and records every state transition.
+The Phase 1 endpoint validates a lead, reuses an existing record when the same lead is submitted again, persists the lead in Supabase/PostgreSQL, asks Claude for a structured qualification, validates the result with Pydantic, stores the decision, and records the complete agent execution. Phase 2 adds a separate LangGraph endpoint that reuses this qualification service, applies deterministic routing, and records every state transition. Phase 3 grounds HOT-lead research in approved internal GTM documents retrieved with pgvector.
 
 The response contains:
 
@@ -34,27 +34,37 @@ app/
 │   └── logging.py                  # JSON logging
 ├── models/
 │   ├── lead.py                     # Lead and agent run records
+│   ├── knowledge.py                # Knowledge, chunk, and evidence records
 │   └── orchestration.py            # Persisted transition record
 ├── repositories/
 │   ├── lead_repository.py          # Lead persistence interface + Supabase adapter
 │   ├── agent_run_repository.py     # Agent run interface + Supabase adapter
+│   ├── knowledge_repository.py     # Document and vector persistence
+│   ├── rag_repository.py           # Vector RPC and evidence persistence
 │   └── agent_state_transition_repository.py
 ├── schemas/
 │   ├── lead.py                     # Input validation
+│   ├── knowledge.py                # Ingestion, retrieval, and source contracts
 │   ├── qualification.py            # Structured LLM output and Phase 1 response
 │   └── orchestration.py            # Routes, actions, status, Phase 2 response
 └── services/
     ├── agent_orchestration_service.py # LangGraph nodes and execution
+    ├── chunking_service.py         # Deterministic word-window chunking
+    ├── embedding_service.py        # Provider boundary + Voyage adapter
+    ├── knowledge_ingestion_service.py
     ├── lead_service.py             # Idempotent lead ingestion
     ├── llm_service.py              # Provider boundary + Anthropic adapter
-    └── qualification_service.py    # End-to-end orchestration
+    ├── qualification_service.py    # End-to-end qualification
+    └── retrieval_service.py        # Top-K internal knowledge retrieval
 
 sql/001_initial_schema.sql          # Tables, constraints, indexes, RLS, grants
 sql/002_agent_state_transitions.sql # Immutable graph transition history
+sql/003_rag_knowledge_base.sql      # pgvector knowledge and RAG evidence
+demo_knowledge/                     # Fictional portfolio knowledge documents
 tests/                              # External-service-free test suite
 ```
 
-The service layer depends on repository and LLM interfaces rather than vendor clients. Supabase and Anthropic are adapters at the edges, so a future provider can be added without rewriting the qualification workflow.
+The service layer depends on repository, LLM, and embedding interfaces rather than vendor clients. Supabase, Anthropic, and Voyage are adapters at the edges, so provider-specific code does not leak into qualification, ingestion, or retrieval logic.
 
 ## Tech Stack
 
@@ -63,6 +73,8 @@ The service layer depends on repository and LLM interfaces rather than vendor cl
 - Pydantic v2 and pydantic-settings
 - Supabase/PostgreSQL
 - Anthropic Claude with native structured outputs
+- Voyage AI `voyage-4` embeddings
+- pgvector with cosine similarity and HNSW indexing
 - LangGraph 1.2
 - Pytest
 
@@ -115,6 +127,7 @@ Response:
 Other useful endpoints:
 
 - `POST /api/v1/leads/agent`
+- `POST /api/v1/knowledge/documents`
 - `GET /health`
 - `GET /docs`
 
@@ -187,9 +200,119 @@ The `agent_state_transitions` table stores the ordered path from `START` through
 
 Node failures become safe error codes in the graph state. When an orchestration run exists, transitions are persisted and its `agent_runs` row becomes `failed`. Invalid states, invalid routes, qualification provider failures, database failures, and unexpected graph errors never expose a stack trace to the API client.
 
+## Phase 3 — RAG Knowledge Layer
+
+### Why RAG
+
+HOT leads need context that reflects the company's actual positioning, ICP, product, playbook, objections, and case studies. RAG retrieves relevant passages from the approved internal knowledge base before Claude writes a research brief. This reduces unsupported claims and preserves the evidence behind the output.
+
+Phase 3 performs **no public web search, browser research, or web scraping**. It queries only documents stored in this project's PostgreSQL database.
+
+### Knowledge Ingestion
+
+The backend endpoint is:
+
+```text
+POST /api/v1/knowledge/documents
+```
+
+Example request:
+
+```json
+{
+  "title": "Ideal Customer Profile",
+  "document_type": "icp",
+  "content": "Approved internal GTM guidance...",
+  "source": "demo_knowledge/icp.md",
+  "metadata": {
+    "portfolio": true
+  }
+}
+```
+
+The service validates the document, creates its document record, chunks the content, generates document embeddings in one batch, and stores the chunks and vectors. If embedding or chunk persistence fails, the newly created document is removed so incomplete knowledge is not retained.
+
+The endpoint is an administrative backend operation. Protect it with the deployment's service authentication or API gateway before exposing the API publicly.
+
+### Chunking and Embeddings
+
+Chunking uses deterministic word windows: 160 words per chunk with a 24-word overlap by default. This keeps the implementation auditable and avoids a tokenizer-specific dependency. The values are configurable, and the same input and settings always produce the same chunks.
+
+Anthropic [does not provide its own embedding model](https://platform.claude.com/docs/en/build-with-claude/embeddings). The isolated embedding adapter therefore uses Voyage AI `voyage-4`, which supports general-purpose and multilingual retrieval and produces 1,024-dimensional vectors by default. Ingestion uses `input_type=document`; retrieval queries use `input_type=query`, following the [Voyage embedding API](https://docs.voyageai.com/docs/embeddings).
+
+### pgvector Retrieval
+
+`knowledge_chunks.embedding` is `extensions.vector(1024)`. The migration creates an HNSW index with `vector_cosine_ops`, matching the cosine-distance operator used by `match_knowledge_chunks`. HNSW was selected because Supabase recommends it as the default vector index for its performance and robustness as data changes ([Supabase HNSW guide](https://supabase.com/docs/guides/ai/vector-indexes/hnsw-indexes)).
+
+`RetrievalService` embeds the lead-specific query, calls the service-role-only database function, filters results by the configured similarity threshold, sorts by similarity, and returns up to the configured Top K chunks. Defaults are Top 5 and a minimum similarity of 0.40, calibrated against the included demo knowledge with `voyage-4`.
+
+### HOT Lead Flow
+
+```text
+HOT Lead
+   ↓
+Research
+   ↓
+Build Retrieval Query
+   ↓
+Voyage Query Embedding
+   ↓
+pgvector Cosine Search
+   ↓
+Top-K Internal GTM Knowledge
+   ↓
+Claude
+   ↓
+Grounded Research Context
+   ↓
+Evidence Stored
+```
+
+The LangGraph path is now:
+
+```text
+research_state
+  ↓
+retrieve_gtm_knowledge
+  ↓
+build_research_context
+  ↓
+persist_agent_state
+```
+
+WARM and COLD leads retain their Phase 2 paths and never call the embedding provider or retrieval service.
+
+For HOT leads, the existing response receives two additive fields:
+
+```json
+{
+  "research_context": "Grounded brief generated only from the lead and retrieved chunks.",
+  "sources": [
+    {
+      "document_id": "8ac2726c-f757-4a17-972e-c29f0dbecfa6",
+      "chunk_id": "759b5e8b-e458-4918-a88d-466f10b97a9d",
+      "title": "Ideal Customer Profile",
+      "similarity": 0.91
+    }
+  ]
+}
+```
+
+The original response fields are unchanged. WARM and COLD responses omit the optional RAG fields.
+
+### Evidence and Hallucination Control
+
+Every selected chunk is written to `rag_retrievals` with its orchestration run, lead, query, chunk, similarity, and rank. This makes it possible to trace the research context back to exact internal sources.
+
+Claude receives only the validated lead and retrieved chunks. Its system instruction prohibits public knowledge, assumptions, and unsupported claims. If no chunk meets the threshold, Claude is not called and the successful HOT execution returns:
+
+```text
+insufficient_internal_knowledge
+```
+
 ## Database
 
-Run [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql) and then [`sql/002_agent_state_transitions.sql`](sql/002_agent_state_transitions.sql) in the Supabase SQL Editor before starting the API.
+Run [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql), [`sql/002_agent_state_transitions.sql`](sql/002_agent_state_transitions.sql), and [`sql/003_rag_knowledge_base.sql`](sql/003_rag_knowledge_base.sql) in order before starting the API.
 
 The migration creates:
 
@@ -206,6 +329,16 @@ The Phase 2 migration adds:
 - RLS with no `anon` or `authenticated` access;
 - immutable backend access through `SELECT` and `INSERT` only.
 
+The Phase 3 migration adds:
+
+- the `vector` extension in the `extensions` schema;
+- `knowledge_documents` and `knowledge_chunks` with a cascading document foreign key;
+- 1,024-dimensional vectors and an HNSW cosine index;
+- the service-role-only `match_knowledge_chunks` search function;
+- `rag_retrievals` with indexed foreign keys and immutable evidence;
+- the two new HOT-path states in transition constraints;
+- RLS on every new table, no `anon` or `authenticated` privileges, and least-privilege backend grants.
+
 `SUPABASE_KEY` must be a backend-only Supabase secret/service-role key. Never expose it in a browser or commit it to Git.
 
 ## Reliability
@@ -220,6 +353,10 @@ The Phase 2 migration adds:
 - Public responses never include internal provider or database details.
 - Logs use named events and omit lead payloads, email addresses, and secrets.
 - Every attempted model call has an auditable `agent_runs` record when the database is available.
+- Embedding batches are validated for count, ordering, finite values, and exact vector dimension.
+- Retrieval applies both a bounded Top K and a similarity threshold.
+- Empty retrieval skips Claude and returns a controlled fallback.
+- RAG evidence links every source chunk to its lead and orchestration run.
 
 ## Running Locally
 
@@ -250,7 +387,7 @@ Requirements: Python 3.12 and a Supabase project.
    `requirements.txt` lists the direct dependencies; `requirements.lock` pins the
    complete tested dependency graph for reproducible installations.
 
-3. Create the database objects by running `sql/001_initial_schema.sql` and then `sql/002_agent_state_transitions.sql` in the Supabase SQL Editor.
+3. Create the database objects by running `sql/001_initial_schema.sql`, `sql/002_agent_state_transitions.sql`, and `sql/003_rag_knowledge_base.sql` in order in the Supabase SQL Editor.
 
 4. Copy `.env.example` to `.env` and configure:
 
@@ -260,6 +397,14 @@ Requirements: Python 3.12 and a Supabase project.
    ANTHROPIC_API_KEY=your-anthropic-api-key
    LLM_PROVIDER=anthropic
    LLM_MODEL=your-supported-claude-model
+   EMBEDDING_PROVIDER=voyage
+   EMBEDDING_MODEL=voyage-4
+   EMBEDDING_API_KEY=your-voyage-api-key
+   EMBEDDING_DIMENSION=1024
+   RAG_TOP_K=5
+   RAG_SIMILARITY_THRESHOLD=0.40
+   RAG_CHUNK_SIZE_WORDS=160
+   RAG_CHUNK_OVERLAP_WORDS=24
    ```
 
 5. Start the API.
@@ -282,7 +427,7 @@ Run:
 pytest
 ```
 
-The tests replace both Supabase and Claude with in-memory fakes. They do not require credentials, network access, or paid API calls.
+The tests replace Supabase, Claude, Voyage, and vector search with in-memory fakes or local HTTP mock transports. They do not require credentials, network access, or paid API calls.
 
 Covered behavior includes:
 
@@ -301,14 +446,23 @@ Covered behavior includes:
 - failed graph nodes and safe API errors;
 - the Phase 2 response contract;
 - continued compatibility of the Phase 1 endpoint.
+- knowledge document ingestion and deterministic chunking;
+- stored embedding and chunk metadata;
+- Top-K retrieval and similarity filtering;
+- HOT-only RAG execution;
+- grounded Claude inputs and optional source output;
+- no-context fallback without a Claude call;
+- persisted retrieval evidence;
+- safe embedding, retrieval, and research-provider failures;
+- continued backward compatibility for WARM, COLD, and Phase 1 responses.
 
 ## Roadmap
 
 - **Phase 1 — AI Lead Qualification Core** (completed)
 - **Phase 2 — Agent orchestration with LangGraph** (completed)
-- **Phase 3 — RAG + PostgreSQL/pgvector**
+- **Phase 3 — RAG + PostgreSQL/pgvector** (completed)
 - **Phase 4 — Tools + MCP Server**
 - **Phase 5 — n8n + CRM + email integrations**
 - **Phase 6 — Observability + Human-in-the-loop + dashboard**
 
-No Phase 3+ functionality is implemented in this codebase.
+No Phase 4+ functionality is implemented in this codebase.
