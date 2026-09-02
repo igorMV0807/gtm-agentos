@@ -106,12 +106,47 @@
       "position": [450, 260]
     },
     {
-      "parameters": {},
+      "parameters": {
+        "jsCode": "const action = $json;\nif (action.action_type !== 'create_or_update_crm_lead') throw new Error('invalid_crm_action');\nconst payload = action.payload || {};\nfor (const field of ['lead_id', 'name', 'email', 'company', 'classification']) {\n  if (!String(payload[field] || '').trim()) throw new Error('invalid_crm_payload');\n}\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(String(payload.email))) throw new Error('invalid_crm_email');\nconst properties = {\n  email: String(payload.email),\n  gtm_agentos_lead_id: String(payload.lead_id),\n  firstname: String(payload.name),\n  company: String(payload.company),\n  jobtitle: String(payload.job_title || '')\n};\nreturn [{ json: { ...action, provider_request: { inputs: [{ id: String(payload.email), idProperty: 'email', properties }] } } }];"
+      },
       "id": "crm-provider",
-      "name": "CRM Provider Placeholder",
-      "type": "n8n-nodes-base.noOp",
-      "typeVersion": 1,
+      "name": "Prepare HubSpot Upsert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [700, 20]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/objects/2026-03/contacts/batch/upsert",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.provider_request) }}",
+        "options": {}
+      },
+      "id": "hubspot-upsert",
+      "name": "HubSpot Upsert Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 20]
+    },
+    {
+      "parameters": {
+        "jsCode": "const action = $('Prepare HubSpot Upsert').item.json;\nconst reference = $json.results?.[0]?.id || $json.id;\nif (!reference) throw new Error('hubspot_contact_reference_missing');\nreturn [{ json: { ...action, external_reference: String(reference).slice(0, 500), provider: 'hubspot' } }];"
+      },
+      "id": "normalize-hubspot",
+      "name": "Normalize HubSpot Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 20]
     },
     {
       "parameters": {},
@@ -130,12 +165,48 @@
       "position": [700, 220]
     },
     {
-      "parameters": {},
+      "parameters": {
+        "jsCode": "const action = $json;\nif (action.action_type !== 'send_approved_email') throw new Error('invalid_email_action');\nconst payload = action.payload || {};\nconst configuredRecipient = String($env.EMAIL_TEST_RECIPIENT || '').trim().toLowerCase();\nconst requestedRecipient = String(payload.to_email || '').trim().toLowerCase();\nif (!configuredRecipient) throw new Error('email_validation_recipient_not_configured');\nif (!requestedRecipient || requestedRecipient !== configuredRecipient) throw new Error('email_recipient_not_allowed');\nif (!String(payload.body || '').trim()) throw new Error('invalid_email_payload');\nconst controlledBody = 'TESTE CONTROLADO DO GTM AGENTOS — nenhuma ação é necessária.\\n\\n' + String(payload.body);\nreturn [{ json: { ...action, provider_idempotency_key: String(action.idempotency_key), provider_request: { from: 'GTM AgentOS <onboarding@resend.dev>', to: [requestedRecipient], subject: 'GTM AgentOS — End-to-End Test', text: controlledBody } } }];"
+      },
       "id": "email-provider",
-      "name": "Email Provider Placeholder",
-      "type": "n8n-nodes-base.noOp",
-      "typeVersion": 1,
+      "name": "Prepare Resend Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [700, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.RESEND_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Idempotency-Key", "value": "={{ $json.provider_idempotency_key }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.provider_request) }}",
+        "options": {}
+      },
+      "id": "resend-email",
+      "name": "Resend Send Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 320]
+    },
+    {
+      "parameters": {
+        "jsCode": "const action = $('Prepare Resend Email').item.json;\nconst reference = $json.id;\nif (!reference) throw new Error('resend_email_reference_missing');\nreturn [{ json: { ...action, external_reference: String(reference).slice(0, 500), provider: 'resend' } }];"
+      },
+      "id": "normalize-resend",
+      "name": "Normalize Resend Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 320]
     },
     {
       "parameters": {},
@@ -147,7 +218,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst { URL } = require('url');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nconst callbackUrl = $env.GTM_AGENTOS_CALLBACK_URL;\nif (!secret || !callbackUrl) throw new Error('Callback environment is not configured');\nconst parsedUrl = new URL(callbackUrl);\nconst localHosts = new Set(['localhost', '127.0.0.1', '::1']);\nif (parsedUrl.protocol !== 'https:' && !localHosts.has(parsedUrl.hostname)) throw new Error('Callback URL must use HTTPS');\nif (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) throw new Error('Callback URL cannot contain credentials, query, or fragment');\nconst callback = { action_id: $json.action_id, status: 'completed', external_reference: 'replace-with-provider-reference', metadata: { workflow: 'gtm-agentos-actions' } };\nconst rawBody = JSON.stringify(callback);\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + rawBody).digest('hex');\nreturn [{ json: { callbackUrl, rawBody, timestamp, signature, action_id: $json.action_id } }];"
+        "jsCode": "const crypto = require('crypto');\nconst { URL } = require('url');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nconst callbackUrl = $env.GTM_AGENTOS_CALLBACK_URL;\nif (!secret || !callbackUrl) throw new Error('Callback environment is not configured');\nconst parsedUrl = new URL(callbackUrl);\nconst localHosts = new Set(['localhost', '127.0.0.1', '::1']);\nif (parsedUrl.protocol !== 'https:' && !localHosts.has(parsedUrl.hostname)) throw new Error('Callback URL must use HTTPS');\nif (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) throw new Error('Callback URL cannot contain credentials, query, or fragment');\nconst placeholderReferences = { create_follow_up_task: 'placeholder-task', draft_outreach_email: 'placeholder-draft', mark_lead_status: 'placeholder-status' };\nconst externalReference = String($json.external_reference || placeholderReferences[$json.action_type] || '').slice(0, 500);\nif (!externalReference) throw new Error('provider_reference_missing');\nconst callback = { action_id: $json.action_id, status: 'completed', external_reference: externalReference, metadata: { workflow: 'gtm-agentos-actions', provider: String($json.provider || 'placeholder') } };\nconst rawBody = JSON.stringify(callback);\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + rawBody).digest('hex');\nreturn [{ json: { callbackUrl, rawBody, timestamp, signature, action_id: $json.action_id } }];"
       },
       "id": "build-callback",
       "name": "Build Signed Callback",
@@ -213,15 +284,21 @@
     },
     "Switch Allowlisted Action": {
       "main": [
-        [{ "node": "CRM Provider Placeholder", "type": "main", "index": 0 }],
+        [{ "node": "Prepare HubSpot Upsert", "type": "main", "index": 0 }],
         [{ "node": "Task Provider Placeholder", "type": "main", "index": 0 }],
         [{ "node": "Draft Provider Placeholder", "type": "main", "index": 0 }],
-        [{ "node": "Email Provider Placeholder", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Resend Email", "type": "main", "index": 0 }],
         [{ "node": "CRM Status Placeholder", "type": "main", "index": 0 }],
         [{ "node": "Reject Disallowed Action", "type": "main", "index": 0 }]
       ]
     },
-    "CRM Provider Placeholder": {
+    "Prepare HubSpot Upsert": {
+      "main": [[{ "node": "HubSpot Upsert Contact", "type": "main", "index": 0 }]]
+    },
+    "HubSpot Upsert Contact": {
+      "main": [[{ "node": "Normalize HubSpot Result", "type": "main", "index": 0 }]]
+    },
+    "Normalize HubSpot Result": {
       "main": [[{ "node": "Build Signed Callback", "type": "main", "index": 0 }]]
     },
     "Task Provider Placeholder": {
@@ -230,7 +307,13 @@
     "Draft Provider Placeholder": {
       "main": [[{ "node": "Build Signed Callback", "type": "main", "index": 0 }]]
     },
-    "Email Provider Placeholder": {
+    "Prepare Resend Email": {
+      "main": [[{ "node": "Resend Send Email", "type": "main", "index": 0 }]]
+    },
+    "Resend Send Email": {
+      "main": [[{ "node": "Normalize Resend Result", "type": "main", "index": 0 }]]
+    },
+    "Normalize Resend Result": {
       "main": [[{ "node": "Build Signed Callback", "type": "main", "index": 0 }]]
     },
     "CRM Status Placeholder": {
@@ -248,7 +331,7 @@
     "executionOrder": "v1"
   },
   "active": false,
-  "versionId": "3060f51a-7f47-4f63-b4ae-f32a1dc6f5c7",
+  "versionId": "d31cb789-883a-42e5-98fb-72c36bd8d76d",
   "meta": {
     "templateCredsSetupCompleted": false
   },

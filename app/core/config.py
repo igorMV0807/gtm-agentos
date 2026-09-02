@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import AnyHttpUrl, EmailStr, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.exceptions import ApplicationConfigurationError
@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     n8n_signature_max_age_seconds: int = Field(default=300, ge=30, le=900)
     crm_provider: str = "hubspot"
     hubspot_access_token: SecretStr | None = None
+    resend_api_key: SecretStr | None = None
+    email_test_recipient: EmailStr | None = None
+    resend_from_email: str = "GTM AgentOS <onboarding@resend.dev>"
 
     # Internal timeout defaults stay out of .env.example; operators normally need
     # only provider identities, URLs, keys, and the bounded public tuning fields.
@@ -144,6 +147,26 @@ class Settings(BaseSettings):
                 "HUBSPOT_ACCESS_TOKEN must be configured before using HubSpot"
             )
         return provider, self.hubspot_access_token.get_secret_value()
+
+    def require_email(self) -> tuple[str, str, str]:
+        if (
+            self.resend_api_key is None
+            or not self.resend_api_key.get_secret_value().strip()
+            or self.email_test_recipient is None
+        ):
+            raise ApplicationConfigurationError(
+                "RESEND_API_KEY and EMAIL_TEST_RECIPIENT must be configured"
+            )
+        sender = self.resend_from_email.strip()
+        if not sender:
+            raise ApplicationConfigurationError(
+                "RESEND_FROM_EMAIL cannot be empty"
+            )
+        return (
+            self.resend_api_key.get_secret_value(),
+            str(self.email_test_recipient),
+            sender,
+        )
 
 
 @lru_cache

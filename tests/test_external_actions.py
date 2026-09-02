@@ -20,7 +20,7 @@ from app.core.exceptions import (
     WebhookSignatureInvalidError,
 )
 from app.integrations.crm import HubSpotCRMProvider
-from app.integrations.email import require_approved_email_action
+from app.integrations.email import ResendEmailProvider, require_approved_email_action
 from app.integrations.n8n import N8nActionService, N8nDispatchResult, WebhookSigner
 from app.main import app
 from app.models.external_actions import (
@@ -566,6 +566,42 @@ def test_email_provider_guard_rejects_unapproved_action() -> None:
         require_approved_email_action(action)
 
 
+def test_resend_adapter_sends_only_approved_email_to_validation_recipient() -> None:
+    service, _, _ = _service_pair()
+    action = service.approve(_create_email_action(service).id)
+    client = RecordingHTTPClient([FakeHTTPResponse(200, {"id": "email-42"})])
+    provider = ResendEmailProvider(
+        api_key="fake-test-key",
+        test_recipient="buyer@example.com",
+        client=client,
+    )
+
+    result = provider.send_email(action)
+
+    method, url, kwargs = client.calls[0]
+    assert method == "POST"
+    assert url == "https://api.resend.com/emails"
+    assert kwargs["headers"]["Idempotency-Key"] == action.idempotency_key  # type: ignore[index]
+    assert kwargs["json"]["to"] == ["buyer@example.com"]  # type: ignore[index]
+    assert result.external_reference == "email-42"
+
+
+def test_resend_adapter_rejects_other_recipient_before_network() -> None:
+    service, _, _ = _service_pair()
+    action = service.approve(_create_email_action(service).id)
+    client = RecordingHTTPClient([])
+    provider = ResendEmailProvider(
+        api_key="fake-test-key",
+        test_recipient="allowed@example.com",
+        client=client,
+    )
+
+    with pytest.raises(ExternalActionInvalidError):
+        provider.send_email(action)
+
+    assert client.calls == []
+
+
 def test_hubspot_upsert_uses_fixed_url_and_typed_payload() -> None:
     client = RecordingHTTPClient([FakeHTTPResponse(200, {"results": [{"id": "42"}]})])
     provider = HubSpotCRMProvider(access_token="fake-test-token", client=client)
@@ -585,8 +621,9 @@ def test_hubspot_upsert_uses_fixed_url_and_typed_payload() -> None:
 
     method, url, kwargs = client.calls[0]
     assert method == "POST"
-    assert url == "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert"
+    assert url == "https://api.hubapi.com/crm/objects/2026-03/contacts/batch/upsert"
     assert kwargs["json"]["inputs"][0]["id"] == "ada@example.com"  # type: ignore[index]
+    assert "hs_lead_status" not in kwargs["json"]["inputs"][0]["properties"]  # type: ignore[index]
     assert result.external_reference == "42"
 
 
@@ -866,7 +903,10 @@ def test_demo_workflow_is_valid_json_without_credentials() -> None:
     assert "n8n_webhook_secret" in serialized
     assert "gtm_agentos_callback_url" in serialized
     assert all("credentials" not in node for node in data["nodes"])
-    assert "bearer " not in serialized
+    assert "$env.hubspot_access_token" in serialized
+    assert "$env.resend_api_key" in serialized
+    assert "$env.email_test_recipient" in serialized
+    assert "pat-" not in serialized
 
 
 def test_existing_phase_one_and_phase_two_endpoints_remain_compatible(

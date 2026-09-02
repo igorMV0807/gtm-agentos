@@ -62,13 +62,12 @@ class HubSpotCRMProvider:
                         "firstname": payload.name,
                         "company": payload.company,
                         "jobtitle": payload.job_title or "",
-                        "hs_lead_status": payload.classification,
                     },
                 }
             ]
         }
         response = self._post(
-            f"{self._BASE_URL}/crm/v3/objects/contacts/batch/upsert",
+            f"{self._BASE_URL}/crm/objects/2026-03/contacts/batch/upsert",
             data,
         )
         return CRMActionResult(external_reference=self._reference(response, "contact"))
