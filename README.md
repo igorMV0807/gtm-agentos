@@ -1,326 +1,169 @@
 # GTM AgentOS
 
-GTM AgentOS is a portfolio-grade backend for AI-assisted go-to-market workflows. This repository contains **Phase 1: AI Lead Qualification Core**, **Phase 2: Agent Orchestration with LangGraph**, **Phase 3: RAG Knowledge Layer**, **Phase 4: MCP & Controlled Agent Tools**, **Phase 5: External Actions & n8n**, and **Phase 6: Production Observability & Human Operations**.
+AI-native Revenue Operations platform that qualifies leads, orchestrates agent workflows, retrieves grounded GTM knowledge, exposes secure MCP tools, executes human-approved external actions, and provides production-style observability.
 
-## Problem
+GTM AgentOS is a backend-first portfolio project built to demonstrate how an AI workflow can remain useful, deterministic, auditable, and safe across model calls, retrieval, tools, and external actions.
 
-Revenue teams receive leads from multiple sources, but qualification is often inconsistent, difficult to audit, and dependent on repetitive manual review. Duplicate records and unstructured model output make a simple automation unreliable in production.
+## What It Does
 
-## Solution
+- Accepts and validates B2B leads through FastAPI.
+- Uses Claude structured output to score each lead and classify it as `HOT`, `WARM`, or `COLD`.
+- Runs a LangGraph workflow with deterministic application-owned routing.
+- Grounds HOT-lead research in internal GTM documents using Voyage AI embeddings and PostgreSQL/pgvector.
+- Exposes exactly six schema-validated, read-only MCP tools.
+- Creates allowlisted external actions with human approval, HMAC-signed n8n dispatch, callbacks, and idempotency.
+- Gives operators a protected console for metrics, run inspection, timelines, RAG evidence, approvals, latency, and AI usage.
 
-The Phase 1 endpoint validates a lead, reuses an existing record when the same lead is submitted again, persists the lead in Supabase/PostgreSQL, asks Claude for a structured qualification, validates the result with Pydantic, stores the decision, and records the complete agent execution. Phase 2 adds a separate LangGraph endpoint that reuses this qualification service, applies deterministic routing, and records every state transition. Phase 3 grounds HOT-lead research in approved internal GTM documents retrieved with pgvector. Phase 4 exposes a small, read-only, schema-validated MCP tool surface over the same internal services and records every accepted or rejected execution attempt. Phase 5 turns safe agent decisions into allowlisted, approval-gated, idempotent actions dispatched to n8n with signed webhooks and auditable callbacks. Phase 6 adds an authenticated operations console, database-backed metrics, end-to-end lead timelines, approval controls, safe failure visibility, and honest AI usage estimates without increasing agent autonomy.
+## Why It Matters
 
-The response contains:
+Revenue workflows often combine inconsistent lead review, opaque model decisions, duplicated records, and risky automation. GTM AgentOS treats those concerns as engineering boundaries:
 
-- a score from 0 to 100;
-- a `HOT`, `WARM`, or `COLD` classification;
-- a concise reason;
-- a controlled next action.
+- model output is data, not control flow;
+- retrieval is grounded in approved internal knowledge;
+- every graph transition and tool call is auditable;
+- external side effects require explicit policy and, where required, human approval;
+- retries do not create duplicate leads, CRM records, or email sends;
+- secrets remain server-side and sensitive fields are redacted from logs and audit payloads.
 
 ## Architecture
 
-```text
-app/
-├── main.py                         # FastAPI application and error handlers
-├── agents/
-│   ├── routing.py                  # Deterministic classification routing
-│   └── state.py                    # Validated LangGraph state and transitions
-├── api/
-│   ├── dependencies.py             # Composition root
-│   └── routes/                      # Lead, admin, console, approval, and callback endpoints
-├── core/
-│   ├── ai_pricing.py               # Isolated operator-managed AI price catalog
-│   ├── config.py                   # Environment-based settings
-│   ├── exceptions.py               # Safe application errors
-│   ├── logging.py                  # Sanitized JSON events
-│   └── operator_auth.py            # Constant-time key and signed sessions
-├── models/
-│   ├── lead.py                     # Lead and agent run records
-│   ├── knowledge.py                # Knowledge, chunk, and evidence records
-│   ├── mcp.py                      # Tool audit and aggregate records
-│   └── orchestration.py            # Persisted transition record
-├── mcp/
-│   ├── server.py                   # Isolated stdio MCP server
-│   ├── registry.py                 # Closed tool registry and schemas
-│   ├── execution.py                # Validation, sanitization, and audit boundary
-│   ├── schemas.py                  # Explicit tool input/output contracts
-│   └── tools/                      # Read-only lead, RAG, run, and analytics handlers
-├── integrations/
-│   ├── crm.py                      # CRM protocol + fixed-host HubSpot adapter
-│   ├── email.py                    # Email protocol + mandatory approval guard
-│   └── n8n.py                      # Signed, idempotent n8n dispatcher
-├── repositories/
-│   ├── lead_repository.py          # Lead persistence interface + Supabase adapter
-│   ├── agent_run_repository.py     # Agent run interface + Supabase adapter
-│   ├── knowledge_repository.py     # Document and vector persistence
-│   ├── rag_repository.py           # Vector RPC and evidence persistence
-│   ├── mcp_repository.py           # Controlled read-only tool queries
-│   ├── tool_call_repository.py     # Append-only sanitized tool audit
-│   ├── external_action_repository.py # Idempotent action lifecycle persistence
-│   ├── observability_repository.py # Aggregate, timeline, and inspector queries
-│   ├── ai_usage_repository.py      # Append-only model usage events
-│   ├── demo_observability_repository.py # Explicit synthetic portfolio data
-│   └── agent_state_transition_repository.py
-├── schemas/
-│   ├── lead.py                     # Input validation
-│   ├── knowledge.py                # Ingestion, retrieval, and source contracts
-│   ├── external_actions.py         # Closed action, callback, and draft schemas
-│   ├── observability.py             # Admin API response contracts
-│   ├── qualification.py            # Structured LLM output and Phase 1 response
-│   └── orchestration.py            # Routes, actions, status, Phase 2 response
-└── services/
-    ├── agent_orchestration_service.py # LangGraph nodes and execution
-    ├── chunking_service.py         # Deterministic word-window chunking
-    ├── embedding_service.py        # Provider boundary + Voyage adapter
-    ├── knowledge_ingestion_service.py
-    ├── external_action_service.py  # Approval, dispatch, callback, and audit policy
-    ├── observability_service.py    # Metrics, timeline, and safe UI projections
-    ├── ai_usage_service.py         # Honest usage capture and cost estimation
-    ├── lead_service.py             # Idempotent lead ingestion
-    ├── llm_service.py              # Provider boundary + Anthropic adapter
-    ├── qualification_service.py    # End-to-end qualification
-    └── retrieval_service.py        # Top-K internal knowledge retrieval
+```mermaid
+flowchart LR
+    Lead[Lead] --> API[FastAPI]
+    API --> Claude[Claude structured qualification]
+    Claude --> Graph[LangGraph orchestration]
+    Graph --> RAG[Voyage + pgvector RAG]
+    RAG -. controlled context access .-> MCP[Six read-only MCP tools]
+    Graph --> Actions[External actions]
+    MCP -. optional tool boundary .-> Actions
+    Actions --> Approval[Human approval]
+    Approval --> N8N[n8n + HMAC]
+    N8N --> Providers[Allowlisted providers]
 
-sql/001_initial_schema.sql          # Tables, constraints, indexes, RLS, grants
-sql/002_agent_state_transitions.sql # Immutable graph transition history
-sql/003_rag_knowledge_base.sql      # pgvector knowledge and RAG evidence
-sql/004_mcp_tool_calls.sql          # Immutable sanitized tool-call audit
-sql/005_external_actions.sql        # Approval-gated actions and immutable events
-sql/006_observability.sql           # AI usage, aggregate views, RLS, and grants
-n8n/gtm-agentos-actions.workflow.json # Credential-free demonstration workflow
-demo_knowledge/                     # Fictional portfolio knowledge documents
-tests/                              # External-service-free test suite
+    API --> DB[(Supabase / PostgreSQL)]
+    Graph --> DB
+    RAG --> DB
+    MCP --> DB
+    Actions --> DB
+
+    DB --> Obs[Observability layer]
+    Claude --> Obs
+    RAG --> Obs
+    MCP --> Obs
+    N8N --> Obs
+    Obs --> Console[Operator Console]
+    Console --> Approval
 ```
 
-The service layer depends on repository, LLM, embedding, and tool interfaces rather than vendor clients. Supabase, Anthropic, Voyage, and MCP are adapters at the edges, so provider-specific code does not leak into qualification, ingestion, retrieval, or tool policy.
+MCP is a controlled, read-only tool surface rather than a mandatory hop in every lead request. External actions are owned by the application workflow and cannot be created from arbitrary SQL, shell commands, URLs, or tool names.
 
-## Tech Stack
+## Highlights
 
-- Python 3.12
-- FastAPI
-- Pydantic v2 and pydantic-settings
-- Supabase/PostgreSQL
-- Anthropic Claude with native structured outputs
-- Voyage AI `voyage-4` embeddings
-- pgvector with cosine similarity and HNSW indexing
-- LangGraph 1.2
-- Official MCP Python SDK `2.1.1`
-- n8n as the external workflow execution layer
-- Pytest
+- **FastAPI service:** strict request/response contracts and safe application errors.
+- **Claude qualification:** native structured output mapped to Pydantic models.
+- **LangGraph orchestration:** deterministic `HOT → research`, `WARM → nurture`, and `COLD → stop` routes.
+- **Grounded RAG:** Voyage AI `voyage-4` embeddings, 1,024-dimensional vectors, cosine retrieval, Top-K filtering, and evidence persistence.
+- **Six MCP tools:** allowlisted discovery, strict input/output schemas, safe projections, and append-only tool-call auditing.
+- **Human-in-the-loop actions:** approval gates, closed action schemas, conditional state transitions, and safe callbacks.
+- **n8n security:** HMAC SHA-256 signatures, replay-window checks, fixed provider destinations, and explicit rejection of disallowed actions.
+- **Idempotency:** unique lead and action keys plus conditional updates prevent duplicate effects.
+- **Audit trails:** model runs, graph transitions, RAG evidence, MCP calls, external-action events, callbacks, and AI usage.
+- **Operator experience:** authenticated dashboard, run inspector, lead timeline, approval queue, failure visibility, latency, and cost estimates.
+- **Regression coverage:** 118 automated tests across the six implemented phases.
 
-## How It Works
+## Major Technologies
 
-1. `POST /api/v1/leads/qualify` receives and validates the payload.
-2. The service searches by `external_id`; if no match exists, it searches by `email + company`.
-3. An existing lead is updated. A new lead is inserted only when no duplicate exists.
-4. A `started` row is written to `agent_runs` before the model call.
-5. Claude returns a Pydantic-backed structured output.
-6. The application validates the output again before using it.
-7. The latest decision is saved on the lead.
-8. The agent run becomes `completed` with output and latency, or `failed` with a safe error code.
-9. The API returns the qualification as JSON.
+| Area | Technology |
+|---|---|
+| API and validation | Python 3.12, FastAPI, Pydantic v2 |
+| AI qualification and research | Anthropic Claude |
+| Agent orchestration | LangGraph |
+| Embeddings and retrieval | Voyage AI `voyage-4`, PostgreSQL, pgvector |
+| Persistence | Supabase/PostgreSQL |
+| Agent tools | Model Context Protocol Python SDK |
+| External workflow execution | n8n |
+| Provider adapters | HubSpot and Resend |
+| Operations | Server-rendered console, protected admin API, structured logs |
+| Testing | Pytest with in-memory fakes and local transports |
 
-Database unique indexes provide a second idempotency boundary. The service also recovers from a concurrent duplicate insert by re-reading and updating the winning record.
+Direct dependencies are pinned in `requirements.txt`; the fully resolved Python 3.12 dependency graph is pinned in `requirements.lock`.
 
-## API Example
+## Key Engineering Decisions
 
-Request:
+1. **Structured output before business logic.** Claude returns a bounded schema; Pydantic validates it before the application persists or routes anything.
+2. **Application-owned routing.** The model cannot choose graph nodes, tool names, database objects, or external destinations.
+3. **Repository and provider boundaries.** Supabase, Claude, Voyage, n8n, HubSpot, and Resend stay at the edges of the domain.
+4. **Evidence before generation.** HOT-lead research uses only the validated lead and retrieved internal chunks. Empty retrieval skips the research model call.
+5. **Closed tool and action registries.** Unknown MCP tools and disallowed action types fail before reaching a handler or provider.
+6. **Approval before sensitive effects.** Email dispatch requires a persisted approval transition; draft creation alone cannot send.
+7. **Append-only operational history.** Graph transitions, RAG retrievals, tool calls, external-action events, and AI usage provide traceability without exposing raw secrets.
+8. **Least-privilege database access.** Migrations enable RLS, revoke public roles, and grant the backend only the operations required by each repository.
+9. **Honest observability.** Token counts use provider-reported values; cost remains unknown unless both usage and an operator-maintained price are available.
+10. **No chain-of-thought exposure.** The console shows concise public reasoning summaries and evidence, never hidden reasoning.
 
-```bash
-curl -X POST http://localhost:8000/api/v1/leads/qualify \
-  -H "Content-Type: application/json" \
-  -d '{
-    "external_id": "lead_001",
-    "name": "John Smith",
-    "email": "john@acme.com",
-    "company": "Acme",
-    "job_title": "Head of Sales",
-    "company_size": 80,
-    "industry": "SaaS",
-    "country": "United States",
-    "website": "https://acme.com"
-  }'
-```
+## Core Flow
 
-Response:
-
-```json
-{
-  "score": 87,
-  "classification": "HOT",
-  "reason": "Strong fit and senior buying role.",
-  "next_action": "personalized_outreach",
-  "lead_id": "70fc9a5c-87d6-43db-ac3c-726874e6cc27"
-}
-```
-
-Other useful endpoints:
-
-- `POST /api/v1/leads/agent`
-- `POST /api/v1/knowledge/documents`
-- `GET /health`
-- `GET /docs`
-
-## Phase 2 — Agent Orchestration
-
-### Why LangGraph
-
-LangGraph makes each orchestration step explicit and keeps application-controlled routing separate from model output. Claude still performs only the structured Phase 1 qualification. It cannot choose node names or alter graph edges.
-
-The Phase 2 endpoint is:
+The primary endpoint is:
 
 ```text
 POST /api/v1/leads/agent
 ```
 
-It accepts the same validated lead payload as the Phase 1 endpoint. A successful response has this shape:
-
-```json
-{
-  "lead_id": "70fc9a5c-87d6-43db-ac3c-726874e6cc27",
-  "agent_run_id": "61293a82-c6a9-4af2-97ab-5fc6ec7a9123",
-  "score": 90,
-  "classification": "HOT",
-  "route": "research",
-  "next_action": "research_company",
-  "status": "completed"
-}
-```
-
-### Agent State
-
-The graph uses a Pydantic state model containing the validated request, lead and run identifiers, qualification, classification, score, reason, controlled route, controlled next action, current step, status, safe error code, and pending transition records. Extra state fields are rejected.
-
-### Graph Flow
+The request is validated, deduplicated, stored, qualified, routed, and audited:
 
 ```text
 START
   ↓
-Load Lead
+load_lead
   ↓
-Qualify
+qualify
   ↓
-Decision Router
-  ├─ HOT  → Research
-  ├─ WARM → Nurture
-  └─ COLD → Stop
+decision_router
+  ├─ HOT  → research → retrieve_gtm_knowledge → build_research_context
+  ├─ WARM → nurture
+  └─ COLD → stop
   ↓
-Persist State
+persist_agent_state
   ↓
 END
 ```
 
-### Routing
+The qualification-only endpoint remains available at `POST /api/v1/leads/qualify`.
 
-Routing is deterministic application logic:
+### Example request
 
-- `HOT` → `research` → `research_company`
-- `WARM` → `nurture` → `nurture_sequence`
-- `COLD` → `stop` → `discard`
-
-`research` and `nurture` are structured agent states only in Phase 2. They do not call external research services, email tools, or CRM integrations.
-
-### Persistence
-
-Each Phase 2 request creates a `lead_orchestration` row in `agent_runs`. The existing Phase 1 qualification service retains its own nested `lead_qualification` run, preserving its established audit behavior.
-
-The `agent_state_transitions` table stores the ordered path from `START` through `END`, including the route and a minimal JSON payload for each transition. It has foreign keys to `agent_runs` and `leads`, indexes for run and lead history, RLS enabled, no public client access, and backend `SELECT`/`INSERT` privileges only.
-
-### Failure Handling
-
-Node failures become safe error codes in the graph state. When an orchestration run exists, transitions are persisted and its `agent_runs` row becomes `failed`. Invalid states, invalid routes, qualification provider failures, database failures, and unexpected graph errors never expose a stack trace to the API client.
-
-## Phase 3 — RAG Knowledge Layer
-
-### Why RAG
-
-HOT leads need context that reflects the company's actual positioning, ICP, product, playbook, objections, and case studies. RAG retrieves relevant passages from the approved internal knowledge base before Claude writes a research brief. This reduces unsupported claims and preserves the evidence behind the output.
-
-Phase 3 performs **no public web search, browser research, or web scraping**. It queries only documents stored in this project's PostgreSQL database.
-
-### Knowledge Ingestion
-
-The backend endpoint is:
-
-```text
-POST /api/v1/knowledge/documents
+```bash
+curl -X POST http://localhost:8000/api/v1/leads/agent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "external_id": "portfolio-demo-001",
+    "name": "Alex Morgan",
+    "email": "alex.morgan@example.com",
+    "company": "Example Cloud",
+    "job_title": "Head of Sales",
+    "company_size": 80,
+    "industry": "B2B SaaS",
+    "country": "United States",
+    "website": "https://example.com"
+  }'
 ```
 
-Example request:
+### Example response
 
 ```json
 {
-  "title": "Ideal Customer Profile",
-  "document_type": "icp",
-  "content": "Approved internal GTM guidance...",
-  "source": "demo_knowledge/icp.md",
-  "metadata": {
-    "portfolio": true
-  }
-}
-```
-
-The service validates the document, creates its document record, chunks the content, generates document embeddings in one batch, and stores the chunks and vectors. If embedding or chunk persistence fails, the newly created document is removed so incomplete knowledge is not retained.
-
-The endpoint is an administrative backend operation. Protect it with the deployment's service authentication or API gateway before exposing the API publicly.
-
-### Chunking and Embeddings
-
-Chunking uses deterministic word windows: 160 words per chunk with a 24-word overlap by default. This keeps the implementation auditable and avoids a tokenizer-specific dependency. The values are configurable, and the same input and settings always produce the same chunks.
-
-Anthropic [does not provide its own embedding model](https://platform.claude.com/docs/en/build-with-claude/embeddings). The isolated embedding adapter therefore uses Voyage AI `voyage-4`, which supports general-purpose and multilingual retrieval and produces 1,024-dimensional vectors by default. Ingestion uses `input_type=document`; retrieval queries use `input_type=query`, following the [Voyage embedding API](https://docs.voyageai.com/docs/embeddings).
-
-### pgvector Retrieval
-
-`knowledge_chunks.embedding` is `extensions.vector(1024)`. The migration creates an HNSW index with `vector_cosine_ops`, matching the cosine-distance operator used by `match_knowledge_chunks`. HNSW was selected because Supabase recommends it as the default vector index for its performance and robustness as data changes ([Supabase HNSW guide](https://supabase.com/docs/guides/ai/vector-indexes/hnsw-indexes)).
-
-`RetrievalService` embeds the lead-specific query, calls the service-role-only database function, filters results by the configured similarity threshold, sorts by similarity, and returns up to the configured Top K chunks. Defaults are Top 5 and a minimum similarity of 0.40, calibrated against the included demo knowledge with `voyage-4`.
-
-### HOT Lead Flow
-
-```text
-HOT Lead
-   ↓
-Research
-   ↓
-Build Retrieval Query
-   ↓
-Voyage Query Embedding
-   ↓
-pgvector Cosine Search
-   ↓
-Top-K Internal GTM Knowledge
-   ↓
-Claude
-   ↓
-Grounded Research Context
-   ↓
-Evidence Stored
-```
-
-The LangGraph path is now:
-
-```text
-research_state
-  ↓
-retrieve_gtm_knowledge
-  ↓
-build_research_context
-  ↓
-persist_agent_state
-```
-
-WARM and COLD leads retain their Phase 2 paths and never call the embedding provider or retrieval service.
-
-For HOT leads, the existing response receives two additive fields:
-
-```json
-{
-  "research_context": "Grounded brief generated only from the lead and retrieved chunks.",
+  "lead_id": "<lead-id>",
+  "agent_run_id": "<agent-run-id>",
+  "score": 90,
+  "classification": "HOT",
+  "route": "research",
+  "next_action": "research_company",
+  "status": "completed",
+  "research_context": "Grounded summary from retrieved internal knowledge.",
   "sources": [
     {
-      "document_id": "8ac2726c-f757-4a17-972e-c29f0dbecfa6",
-      "chunk_id": "759b5e8b-e458-4918-a88d-466f10b97a9d",
+      "document_id": "<document-id>",
+      "chunk_id": "<chunk-id>",
       "title": "Ideal Customer Profile",
       "similarity": 0.91
     }
@@ -328,331 +171,101 @@ For HOT leads, the existing response receives two additive fields:
 }
 ```
 
-The original response fields are unchanged. WARM and COLD responses omit the optional RAG fields.
+Identifiers above are illustrative placeholders, not records from a real environment.
 
-### Evidence and Hallucination Control
+## Grounded Knowledge Layer
 
-Every selected chunk is written to `rag_retrievals` with its orchestration run, lead, query, chunk, similarity, and rank. This makes it possible to trace the research context back to exact internal sources.
+The included `demo_knowledge/` files contain fictional ICP, product, sales-playbook, objection, and case-study material. The ingestion endpoint:
 
-Claude receives only the validated lead and retrieved chunks. Its system instruction prohibits public knowledge, assumptions, and unsupported claims. If no chunk meets the threshold, Claude is not called and the successful HOT execution returns:
+```text
+POST /api/v1/knowledge/documents
+```
+
+creates a document, deterministic overlapping chunks, and one Voyage document embedding per chunk. Retrieval embeds the query with `input_type=query`, calls the service-role-only pgvector function, applies a bounded Top-K and similarity threshold, and persists the selected evidence in `rag_retrievals`.
+
+If no chunk meets the threshold, the workflow returns:
 
 ```text
 insufficient_internal_knowledge
 ```
 
-## Phase 4 — MCP & Agent Tools
+Claude is not called to invent missing internal context.
 
-### Why MCP
+## MCP Tool Surface
 
-The [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28/server/tools) gives an agent a standard way to discover and call narrowly defined tools without receiving direct database credentials or database clients. GTM AgentOS uses the official Tier 1 [Python SDK](https://github.com/modelcontextprotocol/python-sdk) pinned to `mcp==2.1.1`, compatible with the current 2026-07-28 protocol and earlier negotiated revisions, and runs its MCP server over `stdio`, isolated from the public HTTP application.
+The isolated stdio MCP server exposes exactly six read-only tools:
 
-Phase 4 is deliberately read-only. It does not send email, update a CRM, run shell commands, execute arbitrary SQL, fetch arbitrary URLs, inspect files, or read environment variables. External actions remain out of scope until a later human-in-the-loop phase.
-
-### Tool Registry
-
-`ToolRegistry` is the only executable tool catalog. Every definition contains:
-
-- a unique allowlisted name;
-- a concise description;
-- a Pydantic input model;
-- a Pydantic output model;
-- one handler.
-
-The server exposes exactly these tools:
-
-| Tool | Purpose | Key limits |
+| Tool | Purpose | Main boundary |
 |---|---|---|
-| `get_lead` | Return safe lead fields | UUID only; email and website omitted |
-| `search_leads` | Filter leads | Approved filters only; maximum 50 results |
-| `get_lead_history` | Return safe run and transition history | UUID only; raw model input/output omitted |
-| `search_internal_knowledge` | Search internal GTM knowledge | Existing `RetrievalService`; query ≤ 1,000 characters; Top K ≤ 10 |
-| `get_agent_run` | Return an auditable run summary | UUID only; safe output keys only |
-| `get_pipeline_summary` | Return simple classification and route counts | Fixed aggregates; no custom grouping |
+| `get_lead` | Safe lead projection | Omits email and website |
+| `search_leads` | Bounded lead search | Approved filters; maximum 50 |
+| `get_lead_history` | Run and transition history | Omits raw model payloads |
+| `search_internal_knowledge` | Existing RAG retrieval | Query and Top-K bounds |
+| `get_agent_run` | Safe run inspection | Allowlisted output keys |
+| `get_pipeline_summary` | Fixed pipeline aggregates | No custom SQL or grouping |
 
-Names outside this registry are rejected. Tool parameters cannot supply table names, SQL, Python, shell commands, file paths, secrets, or URLs.
+The registry rejects unknown tools, extra fields, arbitrary SQL, shell commands, file paths, environment-variable names, and arbitrary URLs. Accepted, rejected, and failed attempts are recorded in `tool_calls` with sanitized payloads and latency.
 
-### Schemas and Security Boundaries
+Start the MCP server with:
 
-Inputs and outputs are validated twice: the MCP SDK derives protocol schemas from typed functions, and the internal executor validates against the registry's explicit Pydantic models before and after the handler. Models reject extra fields and bound strings, filters, `limit`, and `top_k`.
+```bash
+python -m app.mcp.server
+```
 
-The LLM never receives a Supabase client. MCP handlers call repository interfaces or the existing Phase 3 `RetrievalService`. Lead tools omit email, website, qualification reason, raw run inputs, raw run outputs, and unsafe internal errors. Audit payloads recursively redact fields whose names indicate passwords, tokens, credentials, API keys, authorization headers, cookies, or secrets.
+## External Actions and n8n
 
-### Auditability
+The backend supports only these action types:
 
-Every registry execution writes one append-only `tool_calls` row with sanitized input/output, status, safe error code, latency, and optional lead/run foreign keys. Rejected unknown tools and invalid payloads are audited as `rejected`; handler failures are audited as `failed`; valid calls are `completed`.
+- `create_or_update_crm_lead`
+- `create_follow_up_task`
+- `draft_outreach_email`
+- `send_approved_email`
+- `mark_lead_status`
 
-`tool_calls` has RLS enabled. `public`, `anon`, and `authenticated` have no privileges. The backend `service_role` receives only `SELECT` and `INSERT`, so existing audit rows cannot be updated or deleted through this adapter.
-
-Structured log events are limited to safe metadata:
+There is no generic execution endpoint and no destructive `delete_lead` action. Sensitive actions pass through a persisted lifecycle:
 
 ```text
-mcp_server_started
-tool_call_started
-tool_call_completed
-tool_call_failed
-tool_input_rejected
-unknown_tool_rejected
+pending → approved → executing → completed | failed
+        ↘ rejected
 ```
 
-### Agent Tool Execution
+Every action has a stable idempotency key. Approval and callback updates are conditional, and external lifecycle events are append-only. The exported workflow at `n8n/gtm-agentos-actions.workflow.json` contains 16 nodes, no embedded credentials, explicit action allowlisting, HubSpot and Resend HTTP adapters, placeholders for non-provider actions, signed callbacks, and a controlled HTTP 400 rejection path.
 
-The production LangGraph was not changed merely to force a demonstration tool call. Qualification, routing, and HOT-lead RAG remain deterministic and backward compatible. A host or future controlled graph node can pass an existing `lead_id` or `agent_run_id` to the MCP client, receive a schema-validated result, and then continue the agent flow. Tests demonstrate this path with the SDK's in-memory MCP client and the same registry used by the `stdio` server.
-
-```text
-Claude / Agent
-      ↓
-LangGraph
-      ↓
-Tool Decision
-      ↓
-MCP Server
-      ↓
-Tool Registry
-   ↙    ↓     ↘
-Leads  RAG   Runs
-   ↘    ↓     ↙
-   Supabase
-      ↓
-Validated Result
-      ↓
-Agent continues
-```
-
-This relationship is additive: LangGraph owns state and deterministic routing, RAG owns grounded internal retrieval, and MCP owns discovery, tool schemas, execution policy, and tool-call auditing.
-
-Example MCP calls use structured arguments and results:
-
-```json
-{
-  "tool": "get_lead",
-  "arguments": {"lead_id": "11111111-1111-4111-8111-111111111111"},
-  "result": {
-    "lead": {
-      "id": "11111111-1111-4111-8111-111111111111",
-      "name": "Example Buyer",
-      "company": "Example SaaS",
-      "classification": "HOT"
-    }
-  }
-}
-```
-
-```json
-{
-  "tool": "search_internal_knowledge",
-  "arguments": {"query": "Head of Sales pilot", "top_k": 3},
-  "result": {
-    "query": "Head of Sales pilot",
-    "results": [
-      {
-        "document_id": "22222222-2222-4222-8222-222222222222",
-        "chunk_id": "33333333-3333-4333-8333-333333333333",
-        "title": "Sales Playbook",
-        "content": "Use a focused pilot for qualified B2B SaaS leads.",
-        "similarity": 0.91
-      }
-    ],
-    "count": 1
-  }
-}
-```
-
-```json
-{
-  "tool": "get_pipeline_summary",
-  "arguments": {},
-  "result": {
-    "total_leads": 9,
-    "hot": 4,
-    "warm": 3,
-    "cold": 2,
-    "research": 4,
-    "nurture": 3,
-    "stop": 2
-  }
-}
-```
-
-An attempted `delete_lead` call is rejected as `unknown_tool`; there is no destructive handler to invoke.
-
-## Phase 5 — External Actions & n8n
-
-### Why n8n
-
-n8n is the external execution layer, not the system of record. GTM AgentOS keeps
-lead data, qualification, graph state, policy, idempotency, approval, and audit in
-the backend. n8n receives one already validated action, invokes the configured CRM
-or email provider, and returns a signed result. This keeps vendor workflow details
-outside the domain while preventing n8n from deciding what the agent is allowed to
-do.
-
-```text
-Agent
-  ↓
-Draft Action
-  ↓
-External Action
-  ↓
-Human Approval
-  ↓
-Signed n8n Webhook
-  ↓
-CRM / Email
-  ↓
-Signed Callback
-  ↓
-Audit
-  ↓
-Agent continues from persisted result
-```
-
-Only these action types exist in the API schema and database constraint:
-
-- `create_or_update_crm_lead`;
-- `create_follow_up_task`;
-- `draft_outreach_email`;
-- `send_approved_email`;
-- `mark_lead_status`.
-
-There is no generic action creation endpoint, arbitrary HTTP action, caller-provided
-URL, SQL, shell execution, or delete action. The public control endpoints can only
-approve or reject an action that already exists, or receive its signed result:
-
-```text
-POST /api/v1/actions/{action_id}/approve
-POST /api/v1/actions/{action_id}/reject
-POST /api/v1/integrations/n8n/callback
-```
-
-### Separation of responsibilities
-
-- LangGraph decides among application-owned graph edges; it does not call a CRM or
-  email provider directly.
-- Claude returns a strict `subject`, `body`, and public `reasoning_summary` using
-  only the lead, generated research context, and retrieved approved chunks.
-- `ExternalActionService` validates the closed payload schema, applies approval
-  policy, sanitizes stored data, and owns lifecycle transitions.
-- `N8nActionService` sends only to the configured `N8N_WEBHOOK_URL`; an LLM or
-  callback cannot replace that destination.
-- `CRMProvider` and `EmailProvider` keep vendor APIs outside domain and graph code.
-  The demonstration CRM adapter targets fixed HubSpot API paths.
-
-### Human approval and email safety
-
-A HOT lead with grounded RAG evidence receives a structured draft and one
-`send_approved_email` action in `pending` status. Draft creation never sends the
-message. The email guard accepts only a `send_approved_email` action whose
-`approved_at` is present and whose state has passed the approval gate. Rejection is
-terminal and does not invoke n8n. WARM creates a follow-up task proposal without an
-email; COLD creates no external action.
-
-### Idempotency
-
-Every action has a unique, bounded key derived from
-`lead_id:action_type:campaign_step`. The repository uses an idempotent database
-upsert and returns the existing row on duplicates. Approval is a conditional state
-transition, so repeated approval requests cannot dispatch an action already in
-`executing` or `completed`. A failed dispatch may be retried on the same row with
-the same key; it never creates a second email, CRM lead, or task record.
-
-### Signed webhooks and callbacks
-
-Outbound and callback messages use HMAC SHA-256 over `timestamp.raw_body`. The
-receiver requires `X-GTM-Timestamp` and `X-GTM-Signature`, compares signatures in
-constant time, and rejects timestamps outside a bounded replay window. The callback
-schema accepts only `action_id`, `completed|failed`, an optional external reference,
-and bounded metadata. It never trusts an inbound `action_type`: the service reloads
-the existing action by ID before applying a conditional transition.
-
-### External action audit trail
-
-`external_actions` stores the current action state, safe payload, approval and
-execution timestamps, stable idempotency key, provider reference, safe result, and
-error code. `external_action_events` is append-only and records requested, drafted,
-approved, rejected, started, callback-received, completed, and failed events. Both
-tables have RLS enabled; anonymous and authenticated roles have no grants, while the
-backend service role receives only the operations its repositories need. Token-,
-secret-, password-, cookie-, credential-, and authorization-shaped fields are
-redacted before audit or result persistence.
-
-### Demonstration n8n workflow
-
-Import `n8n/gtm-agentos-actions.workflow.json` into n8n, then configure these n8n
-environment variables:
+Runtime credentials and destinations are supplied to n8n through environment variables:
 
 ```dotenv
 N8N_WEBHOOK_SECRET=replace-with-a-long-random-shared-secret
-GTM_AGENTOS_CALLBACK_URL=https://agentos.example.com/api/v1/integrations/n8n/callback
+GTM_AGENTOS_CALLBACK_URL=https://backend.example.com/api/v1/integrations/n8n/callback
+HUBSPOT_ACCESS_TOKEN=your-hubspot-private-app-token
+RESEND_API_KEY=your-resend-api-key
+RESEND_FROM_EMAIL=GTM AgentOS <sender@your-verified-domain.example>
+EMAIL_TEST_RECIPIENT=allowed-recipient@example.com
+NODE_FUNCTION_ALLOW_BUILTIN=crypto,url
 ```
 
-The inactive workflow demonstrates Webhook Trigger → signature validation →
-allowlisted switch → CRM/email/task provider placeholder → signed callback. It has
-no embedded credentials and deliberately uses no real provider node. Replace only
-the provider placeholders when performing a separately authorized external
-integration validation; keep signature validation, allowlisting, idempotency, and
-callback signing intact.
+Do not commit those values. Provider calls should use test records and an allowlisted recipient during controlled validation.
 
-## Phase 6 — Production Observability & Human Operations
+## Observability and Human Operations
 
-Phase 6 adds an operational read model over the existing audit tables. It does not
-add agent capabilities or duplicate lifecycle data. `ObservabilityService` reads
-pre-aggregated SQL views for dashboard totals and performs bounded, lead- or
-run-scoped queries for drill-downs.
+The protected Operations Console is available at:
 
 ```text
-                     GTM AgentOS
-
-Lead
- ↓
-Qualification
- ↓
-LangGraph
- ↓
-RAG / MCP
- ↓
-External Actions
- ↓
-n8n
- ↓
-Providers
-
-       │
-       │ telemetry
-       ↓
-
-Observability Layer
-       ↓
-Operator Console
-   ↙           ↘
-Inspect       Approve/Reject
+http://localhost:8000/operator
 ```
 
-### Operator Console and authentication boundary
+It includes:
 
-The browser console is available at `/operator`. A server-side login accepts the
-`OPERATOR_API_KEY`, compares it in constant time, and exchanges it for a bounded,
-signed `HttpOnly`, `SameSite=Strict` session cookie. The key is never returned in
-HTML, JavaScript, logs, or API responses. API clients can instead send the explicit
-`X-Operator-Key` header.
+- lead classification and score;
+- agent success, failures, route, latency, and transition timeline;
+- ranked RAG evidence and similarity;
+- MCP status and rejected-call visibility;
+- external-action state and approval queue;
+- safe failure codes;
+- provider-reported token usage and optional cost estimates.
 
-The operator boundary protects all `/api/v1/admin/*` endpoints and the existing
-approve/reject endpoints. `/health` remains public. The n8n callback remains
-independent and continues to require its own timestamped HMAC signature.
+The operator key is exchanged server-side for a signed, bounded, `HttpOnly`, `SameSite=Strict` session cookie. The browser bundle never receives the key. API clients may use `X-Operator-Key`; n8n callbacks remain independently protected by timestamped HMAC signatures.
 
-The console provides:
-
-- lead classification and volume cards;
-- agent success rate, failure counts, and average latency;
-- RAG retrieval counts plus ranked document title and similarity evidence;
-- MCP tool name, status, latency, and rejected-call visibility;
-- external action status, safe failure codes, and pending approvals;
-- an approval queue with allowlisted payload previews, including email subject and
-  body, without recipient addresses or raw payloads;
-- a run inspector with public reasoning summaries, never chain-of-thought;
-- a chronological lead timeline assembled from the existing audit tables;
-- provider-reported token usage and explicitly estimated AI cost.
-
-The administrative API is intentionally small:
+Protected administrative endpoints:
 
 ```text
 GET /api/v1/admin/overview
@@ -663,120 +276,94 @@ GET /api/v1/admin/leads/{lead_id}/timeline
 GET /api/v1/admin/usage
 ```
 
-List endpoints enforce bounded `limit` and `offset` values. Failure projections
-return only a component, timestamp, and normalized safe error code; they never
-return stack traces or provider exception text.
+Public health probes:
 
-### AI usage and estimated cost
+```text
+GET /health
+GET /ready
+```
 
-Anthropic responses contribute `input_tokens` and `output_tokens` when the SDK
-reports them. Voyage responses contribute `total_tokens` when the provider reports
-that field. Missing usage remains `NULL`; the application does not estimate or
-reverse-engineer absent token counts.
+`/ready` performs a bounded database read. It does not call Claude, Voyage, n8n, HubSpot, or Resend.
 
-Pricing is isolated in `AIPricingCatalog` and supplied by the operator through
-`AI_PRICING_JSON`, keyed as `provider:model`. Each entry accepts
-`input_per_million_usd` plus `output_per_million_usd`, or
-`total_per_million_usd`. No default prices are embedded because provider pricing
-changes over time. Cost remains `NULL` until both the required provider usage and a
-matching operator-maintained price are available.
+## End-to-End Validation
 
-### Health and readiness
+The project was exercised through controlled real integrations in addition to its isolated test suite:
 
-`GET /health` reports only that the process is running. `GET /ready` performs one
-bounded database read and reports `database: ok`; it never calls Claude, Voyage,
-n8n, HubSpot, or Resend. Errors use the existing safe `database_unavailable`
-contract without connection details.
+- **Supabase/PostgreSQL:** migrations, persistence, RLS/grants, lead/run records, graph transitions, vector retrieval, action events, tool calls, and observability queries.
+- **Anthropic Claude:** real structured lead qualification and grounded research generation.
+- **LangGraph:** real `START`-to-`END` execution with deterministic classification routes.
+- **Voyage AI + pgvector:** real `voyage-4` document/query embeddings, 1,024 dimensions, relevant Top-K retrieval, evidence persistence, and the no-context fallback.
+- **MCP:** real SDK discovery of exactly six tools, successful reads, invalid-payload rejection, unknown-tool rejection, and audit verification.
+- **n8n:** the permanent remote workflow was updated and activated through its API; signed webhook acceptance and explicit disallowed-action rejection were verified.
+- **HubSpot adapter:** one controlled existing-contact flow completed through n8n without creating a duplicate.
+- **Resend adapter:** one approval-gated email was sent to the configured allowlisted test recipient; callback persistence and idempotency were verified without a second provider send.
+- **Operations Console:** a real Supabase-backed lead, run, timeline, RAG evidence, latency, and updated metrics were inspected locally.
 
-## Database
+These were bounded end-to-end validation runs. They demonstrate integration behavior; they are not a claim that this repository is operating as an unattended production service.
 
-Run [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql), [`sql/002_agent_state_transitions.sql`](sql/002_agent_state_transitions.sql), [`sql/003_rag_knowledge_base.sql`](sql/003_rag_knowledge_base.sql), [`sql/004_mcp_tool_calls.sql`](sql/004_mcp_tool_calls.sql), [`sql/005_external_actions.sql`](sql/005_external_actions.sql), and [`sql/006_observability.sql`](sql/006_observability.sql) in order before starting the API or MCP server.
+No live record IDs, workflow IDs, account identifiers, recipients, tokens, or credentials are published here.
 
-The migration creates:
+## Engineering Challenges
 
-- `leads`, including qualification fields and unique idempotency indexes;
-- `agent_runs`, including model input/output, status, error, and latency;
-- a private trigger function that maintains `updated_at`;
-- Row Level Security on both public tables;
-- explicit access for `service_role` only, with access revoked from `anon` and `authenticated`.
+### Structured output validation
 
-The Phase 2 migration adds:
+Model output is validated at the provider boundary and again before it can affect persistence or routing. Invalid classifications, scores, actions, and extra fields fail closed.
 
-- `agent_state_transitions`, with foreign keys, controlled state/route values, and JSONB payloads;
-- indexes for ordered audit queries by run and lead;
-- RLS with no `anon` or `authenticated` access;
-- immutable backend access through `SELECT` and `INSERT` only.
+### Cross-layer idempotency
 
-The Phase 3 migration adds:
+Lead ingestion, external-action creation, approval, dispatch, callback handling, CRM upsert, and email behavior each need a stable identity and conditional transitions. Database uniqueness remains the final concurrency boundary.
 
-- the `vector` extension in the `extensions` schema;
-- `knowledge_documents` and `knowledge_chunks` with a cascading document foreign key;
-- 1,024-dimensional vectors and an HNSW cosine index;
-- the service-role-only `match_knowledge_chunks` search function;
-- `rag_retrievals` with indexed foreign keys and immutable evidence;
-- the two new HOT-path states in transition constraints;
-- RLS on every new table, no `anon` or `authenticated` privileges, and least-privilege backend grants.
+### Auditing a graph without exposing internals
 
-The Phase 4 migration adds:
+Every state transition is persisted from `START` to `END`, while stored and displayed payloads remain bounded. Operators see evidence and public summaries, not chain-of-thought.
 
-- append-only `tool_calls` with safe status, error, latency, input, and output constraints;
-- nullable foreign keys to leads and agent runs that preserve the audit row on deletion;
-- indexes for run, lead, tool, status, and creation time;
-- RLS and explicit revocation from `public`, `anon`, and `authenticated`;
-- backend-only `SELECT` and `INSERT` privileges.
+### Grounded retrieval and the no-context case
 
-The Phase 5 migration adds:
+Document and query embeddings use the appropriate Voyage input types. pgvector evidence is ranked and persisted. When internal knowledge is insufficient, the application returns an explicit fallback instead of calling Claude for speculation.
 
-- `external_actions` with a closed action/status allowlist, bounded JSONB fields,
-  unique idempotency keys, lifecycle consistency checks, and restrictive foreign keys;
-- append-only `external_action_events` for complete lifecycle auditing;
-- indexed lead, run, active-status, and event lookup paths;
-- the HOT draft and action-request states in graph transition constraints;
-- RLS and explicit revocation from `public`, `anon`, and `authenticated`;
-- service-role-only `SELECT`, `INSERT`, and conditional `UPDATE` for actions, and
-  `SELECT`/`INSERT` for immutable events. No role receives `DELETE`.
+### MCP allowlisting
 
-The Phase 6 migration adds:
+Tool discovery, schemas, execution, output validation, redaction, and auditing share one closed registry. This prevents a generic tool layer from becoming arbitrary database or system access.
 
-- append-only `ai_usage_events` with nullable provider-reported token counts,
-  nullable estimated cost, latency, operation constraints, and lead/run links;
-- indexes for recent usage and lead/run/provider inspection;
-- `security_invoker` aggregate views for overview and AI usage totals;
-- RLS plus explicit revocation from `public`, `anon`, and `authenticated`;
-- service-role-only `SELECT`/`INSERT` on usage events and `SELECT` on aggregate
-  views. No role receives `UPDATE` or `DELETE` on usage events.
+### Approval gates and external effects
 
-`SUPABASE_KEY` must be a backend-only Supabase secret/service-role key. Never expose it in a browser or commit it to Git.
+Draft generation is separate from execution. Approval is a persisted state transition, and rejection is terminal. The provider never receives a request merely because a model produced a draft.
 
-## Reliability
+### HMAC, replay protection, and action idempotency
 
-- Pydantic rejects malformed input before business logic runs.
-- Anthropic structured outputs are mapped to a strict Pydantic model.
-- Scores, classifications, next actions, and database values have constraints.
-- Arbitrary model text cannot become an application control instruction.
-- Provider timeouts return HTTP `504`.
-- Invalid model output and provider failures return HTTP `502`.
-- Database failures return HTTP `503`.
-- Public responses never include internal provider or database details.
-- Logs use named events and omit lead payloads, email addresses, and secrets.
-- Every attempted model call has an auditable `agent_runs` record when the database is available.
-- Embedding batches are validated for count, ordering, finite values, and exact vector dimension.
-- Retrieval applies both a bounded Top K and a similarity threshold.
-- Empty retrieval skips Claude and returns a controlled fallback.
-- RAG evidence links every source chunk to its lead and orchestration run.
-- MCP exposes a fixed registry of six read-only tools over `stdio` only.
-- Tool inputs and outputs are schema-validated before and after every handler.
-- Tool audit records are append-only and recursively redact credential-shaped fields.
-- No MCP tool accepts SQL, table names, shell commands, file paths, arbitrary URLs, or code.
-- External action payloads are selected from a closed schema map and size-bounded.
-- Sensitive email/CRM execution requires an explicit, persisted approval transition.
-- Stable idempotency keys and conditional updates prevent duplicate dispatch.
-- n8n webhook requests and callbacks use HMAC signatures and a replay window.
-- Provider URLs come only from configuration; action and model payloads cannot set them.
+n8n requests and callbacks sign `timestamp.raw_body`, use constant-time comparison, and reject stale timestamps. Stable action keys and conditional updates prevent repeated approval or callback delivery from duplicating side effects.
+
+### Secure operator sessions
+
+The operator secret stays server-side. Login uses constant-time comparison and exchanges the key for a signed session cookie with bounded age and strict browser attributes.
+
+## Database and Security
+
+Apply migrations in order:
+
+```text
+sql/001_initial_schema.sql
+sql/002_agent_state_transitions.sql
+sql/003_rag_knowledge_base.sql
+sql/004_mcp_tool_calls.sql
+sql/005_external_actions.sql
+sql/006_observability.sql
+```
+
+The schema includes `leads`, `agent_runs`, `agent_state_transitions`, knowledge documents/chunks, `rag_retrievals`, `tool_calls`, external actions/events, AI usage events, indexes, constraints, vector search, and aggregate observability views.
+
+RLS is enabled on application tables. Public roles are revoked where the backend owns access, and append-only tables do not receive update/delete grants. Supabase recommends RLS and careful API-key handling as core Data API controls; see [Securing your data](https://supabase.com/docs/guides/database/secure-data) and [API keys](https://supabase.com/docs/guides/getting-started/api-keys).
+
+`SUPABASE_KEY` must be a backend-only secret/service-role key. Never expose it in a browser, client bundle, MCP argument, log, screenshot, or Git commit.
 
 ## Running Locally
 
-Requirements: Python 3.12 and a Supabase project.
+Requirements:
+
+- Python 3.12
+- a Supabase project with the six migrations applied
+- Anthropic and Voyage credentials for real AI/RAG mode
+- optional n8n/provider credentials only for separately authorized external-action tests
 
 1. Create and activate a virtual environment.
 
@@ -794,99 +381,52 @@ Requirements: Python 3.12 and a Supabase project.
    source .venv/bin/activate
    ```
 
-2. Install the fully locked dependency set.
+2. Install the locked dependencies.
 
    ```bash
    python -m pip install -r requirements.lock
    ```
 
-   `requirements.txt` lists the direct dependencies; `requirements.lock` pins the
-   complete tested dependency graph for reproducible installations.
+3. Copy `.env.example` to `.env`, replace every placeholder, and keep the file local.
 
-3. Create the database objects by running `sql/001_initial_schema.sql`, `sql/002_agent_state_transitions.sql`, `sql/003_rag_knowledge_base.sql`, `sql/004_mcp_tool_calls.sql`, `sql/005_external_actions.sql`, and `sql/006_observability.sql` in order in the Supabase SQL Editor.
-
-4. Copy `.env.example` to `.env` and configure:
-
-   ```dotenv
-   SUPABASE_URL=https://your-project-ref.supabase.co
-   SUPABASE_KEY=your-backend-secret-or-service-role-key
-   ANTHROPIC_API_KEY=your-anthropic-api-key
-   LLM_PROVIDER=anthropic
-   LLM_MODEL=your-supported-claude-model
-   EMBEDDING_PROVIDER=voyage
-   EMBEDDING_MODEL=voyage-4
-   EMBEDDING_API_KEY=your-voyage-api-key
-   EMBEDDING_DIMENSION=1024
-   RAG_TOP_K=5
-   RAG_SIMILARITY_THRESHOLD=0.40
-   RAG_CHUNK_SIZE_WORDS=160
-   RAG_CHUNK_OVERLAP_WORDS=24
-   N8N_WEBHOOK_URL=https://your-n8n.example/webhook/gtm-agentos-actions
-   N8N_WEBHOOK_SECRET=replace-with-a-long-random-shared-secret
-   CRM_PROVIDER=hubspot
-   HUBSPOT_ACCESS_TOKEN=
-   OPERATOR_API_KEY=replace-with-at-least-32-random-bytes
-   OPERATOR_SESSION_MAX_AGE_SECONDS=43200
-   AI_PRICING_JSON={}
-   PORTFOLIO_MODE=false
-   ```
-
-   `HUBSPOT_ACCESS_TOKEN` is optional until the HubSpot adapter is intentionally
-   used. Keep all provider credentials server-side. The API requires HTTPS for the
-   n8n URL except when it explicitly targets localhost.
-
-5. Start the API.
+4. Start the API.
 
    ```bash
    uvicorn app.main:app --reload
    ```
 
-6. Verify it is running.
+5. Verify the process and database.
 
    ```bash
    curl http://localhost:8000/health
    curl http://localhost:8000/ready
    ```
 
-7. Open `http://localhost:8000/operator`, enter the configured operator key, and
-   use the console to inspect runs or approve/reject pending actions. API clients
-   can use `X-Operator-Key` instead of the signed browser session.
+6. Open `http://localhost:8000/operator` and authenticate with the locally configured operator key.
 
-8. Run the isolated MCP server over `stdio` when an MCP host needs the tools.
+### Portfolio mode
 
-   ```bash
-   python -m app.mcp.server
-   ```
+`PORTFOLIO_MODE=true` uses a clearly labeled, in-memory synthetic observability read model. It makes no Supabase, Claude, Voyage, HubSpot, Resend, or n8n call, and approval controls are disabled for synthetic actions.
 
-   Configure the MCP host to launch that command with this project as its working
-   directory. Keep the environment server-side; never place Supabase, Anthropic,
-   or Voyage secrets in MCP tool arguments.
+Use real mode for integration validation:
 
-### Portfolio mode without paid credentials
-
-Portfolio mode uses an in-memory, clearly labeled synthetic read model. It makes no
-Supabase, Claude, Voyage, HubSpot, Resend, or n8n call. Approval buttons are disabled
-for synthetic actions so the demo cannot pretend an external action was executed.
-
-Windows PowerShell:
-
-```powershell
-$env:PORTFOLIO_MODE="true"
-$env:OPERATOR_API_KEY="portfolio-demo-operator-key-00000001"
-uvicorn app.main:app --reload
+```dotenv
+PORTFOLIO_MODE=false
 ```
 
-macOS/Linux:
+## Demo and Screenshots
 
-```bash
-PORTFOLIO_MODE=true \
-OPERATOR_API_KEY=portfolio-demo-operator-key-00000001 \
-uvicorn app.main:app --reload
-```
+The Operations Console is the main visual demonstration surface. Screenshot files are intentionally not fabricated or committed yet. The capture plan and redaction checklist live in [`docs/images/README.md`](docs/images/README.md).
 
-Then open `http://localhost:8000/operator`. The console shows demo leads, agent
-runs, ranked RAG evidence, MCP calls, a pending email draft, and the approval queue,
-with a visible banner stating that the records are synthetic.
+Planned public assets:
+
+| File | Intended view |
+|---|---|
+| `docs/images/operations-console.png` | Dashboard metrics and recent runs |
+| `docs/images/run-inspector.png` | Classification, route, latency, and RAG evidence |
+| `docs/images/lead-timeline.png` | Ordered qualification, graph, retrieval, and action events |
+
+Only sanitized demo/test data should appear in public screenshots.
 
 ## Testing
 
@@ -896,70 +436,42 @@ Run:
 pytest
 ```
 
-The tests replace Supabase, Claude, Voyage, vector search, MCP repositories, and tool auditing with in-memory fakes or local transports. They do not require credentials, network access, or paid API calls.
+The suite contains 118 tests. It replaces Supabase, Claude, Voyage, vector search, n8n, HubSpot, Resend, and MCP persistence with in-memory fakes or local transports, so regression runs require no paid calls or secrets.
 
-Covered behavior includes:
+Coverage includes:
 
-- valid lead qualification;
-- invalid payload rejection;
-- duplicate lead reuse;
-- `HOT`, `WARM`, and `COLD` results;
-- invalid LLM output;
-- provider failure;
-- LLM timeout;
-- database failure;
-- successful and failed `agent_runs` updates.
-- deterministic `HOT`, `WARM`, and `COLD` graph routes;
-- invalid route rejection;
-- persisted graph transitions;
-- failed graph nodes and safe API errors;
-- the Phase 2 response contract;
-- continued compatibility of the Phase 1 endpoint.
-- knowledge document ingestion and deterministic chunking;
-- stored embedding and chunk metadata;
-- Top-K retrieval and similarity filtering;
-- HOT-only RAG execution;
-- grounded Claude inputs and optional source output;
-- no-context fallback without a Claude call;
-- persisted retrieval evidence;
-- safe embedding, retrieval, and research-provider failures;
-- continued backward compatibility for WARM, COLD, and Phase 1 responses.
-- all six read-only MCP tools;
-- exact MCP tool exposure through the official in-memory client;
-- registry allowlisting and rejection of unknown tools;
-- strict input/output schemas and rejection of extra filters;
-- result limits and reuse of the existing retrieval service;
-- completed, failed, and rejected tool-call audit records;
-- secret redaction from logs and stored audit payloads;
-- continued compatibility of the Phase 1–3 HTTP endpoints.
-- allowlisted external action creation and strict payload rejection;
-- human approval, rejection, single dispatch, safe failure, and retry behavior;
-- unique action idempotency and duplicate approval protection;
-- valid, invalid, and stale HMAC signatures plus strict callback schemas;
-- credential redaction from nested callback metadata;
-- CRM and n8n adapter requests through local recording fakes;
-- structured HOT email drafts, WARM task planning, and COLD no-action behavior;
-- continued compatibility of the Phase 1–4 behavior without external calls.
-- constant-time operator header authentication and signed `HttpOnly` sessions;
-- protected admin and approval endpoints with an independent n8n callback;
-- overview metrics, pagination, run inspection, timeline aggregation, and safe
-  failure projections;
-- RAG evidence, MCP rejected-call visibility, pending approval previews, and
-  approval/rejection through the console session;
-- provider-reported usage, isolated cost estimation, and honest missing-token
-  behavior;
-- public health, database readiness, migration security, and secret-free browser
-  assets.
+- qualification, validation, deduplication, safe provider failures, and run auditing;
+- all LangGraph routes, transitions, response contracts, and graph failures;
+- ingestion, embeddings, retrieval, HOT-only RAG, evidence, and no-context behavior;
+- six MCP tools, SDK discovery, schema enforcement, redaction, limits, and audit statuses;
+- approval, rejection, dispatch, callbacks, HMAC, replay protection, and idempotency;
+- operator authentication, sessions, protected APIs, metrics, timelines, RAG evidence, usage, readiness, and browser-asset secret checks.
 
-## Roadmap
+## Repository Layout
 
-- **Phase 1 — AI Lead Qualification Core** (completed)
-- **Phase 2 — Agent orchestration with LangGraph** (completed)
-- **Phase 3 — RAG + PostgreSQL/pgvector** (completed)
-- **Phase 4 — Tools + MCP Server** (completed)
-- **Phase 5 — n8n + CRM + email integrations** (completed and externally validated)
-- **Phase 6 — Observability + Human-in-the-loop + dashboard** (completed locally)
+```text
+app/
+├── agents/          # LangGraph state and routing
+├── api/             # FastAPI routes and dependency composition
+├── core/            # Configuration, auth, pricing, errors, logging
+├── integrations/    # n8n, HubSpot, and Resend boundaries
+├── mcp/             # stdio server, registry, schemas, tools, auditing
+├── models/          # persistence records
+├── repositories/    # Supabase and in-memory data access
+├── schemas/         # strict API and domain contracts
+├── services/        # qualification, RAG, orchestration, actions, observability
+└── static/          # Operations Console assets
+demo_knowledge/      # fictional internal GTM documents
+n8n/                # credential-free workflow export
+sql/                # incremental migrations
+tests/               # 118-test regression suite
+docs/images/        # reserved sanitized public screenshots
+```
 
-Phase 6 has been validated locally with synthetic data and no paid provider calls.
-Its migration is intentionally not applied to the real Supabase project by this
-implementation step.
+## Project Status
+
+Phases 1–6 are implemented and validated. The repository is production-oriented and portfolio-ready in architecture, safety boundaries, tests, and documentation; operating it in production would still require environment-specific deployment, monitoring, secret management, data-retention, and incident-response decisions.
+
+## License
+
+This project is available under the [MIT License](LICENSE).
