@@ -71,6 +71,28 @@ MCP is a controlled, read-only tool surface rather than a mandatory hop in every
 - **Operator experience:** authenticated dashboard, run inspector, lead timeline, approval queue, failure visibility, latency, and cost estimates.
 - **Regression coverage:** 118 automated tests across the six implemented phases.
 
+## Demo / Screenshots
+
+These are real captures of the Operations Console running locally in explicit Portfolio Mode. Every displayed record is synthetic and clearly labeled; no Supabase, Claude, Voyage, n8n, HubSpot, or Resend call was made while producing these images.
+
+### Operations overview
+
+![GTM AgentOS Operations Console overview](docs/images/operations-overview.png)
+
+### Run inspector
+
+![GTM AgentOS run inspector with classification, latency, RAG evidence, MCP calls, and external actions](docs/images/run-inspector.png)
+
+### Lead timeline
+
+![GTM AgentOS lead timeline from qualification through RAG, MCP, and external actions](docs/images/lead-timeline.png)
+
+### Human approval queue
+
+![GTM AgentOS human approval queue with a synthetic outreach draft](docs/images/approval-queue.png)
+
+Additional focused captures are available for [RAG evidence](docs/images/rag-evidence.png), [MCP tool calls](docs/images/mcp-tool-calls.png), and [sanitized recent failures](docs/images/recent-failures.png).
+
 ## Major Technologies
 
 | Area | Technology |
@@ -413,20 +435,6 @@ Use real mode for integration validation:
 ```dotenv
 PORTFOLIO_MODE=false
 ```
-
-## Demo and Screenshots
-
-The Operations Console is the main visual demonstration surface. Screenshot files are intentionally not fabricated or committed yet. The capture plan and redaction checklist live in [`docs/images/README.md`](docs/images/README.md).
-
-Planned public assets:
-
-| File | Intended view |
-|---|---|
-| `docs/images/operations-console.png` | Dashboard metrics and recent runs |
-| `docs/images/run-inspector.png` | Classification, route, latency, and RAG evidence |
-| `docs/images/lead-timeline.png` | Ordered qualification, graph, retrieval, and action events |
-
-Only sanitized demo/test data should appear in public screenshots.
 
 ## Testing
 
