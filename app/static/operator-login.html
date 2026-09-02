@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GTM AgentOS · Operator Login</title>
+  <link rel="stylesheet" href="/operator-assets/operator-console.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="brand-mark">G</div>
+    <p class="eyebrow">GTM AgentOS</p>
+    <h1>Operations Console</h1>
+    <p class="muted">Authenticate with the operator key configured on the server.</p>
+    <form method="post" action="/operator/login" class="login-form">
+      <label for="operator_key">Operator key</label>
+      <input id="operator_key" name="operator_key" type="password" required minlength="32" autocomplete="current-password">
+      <p class="form-error" role="alert">{{ERROR}}</p>
+      <button type="submit" class="button primary">Open console</button>
+    </form>
+  </main>
+</body>
+</html>

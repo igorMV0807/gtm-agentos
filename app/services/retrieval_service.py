@@ -63,6 +63,7 @@ class RetrievalService:
         )
         if not relevant:
             logger.info("rag_no_relevant_context")
+            logger.info("rag_no_context", extra={"status": "completed"})
         return relevant
 
     @staticmethod

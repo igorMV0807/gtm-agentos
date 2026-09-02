@@ -117,6 +117,14 @@ class ExternalActionService:
                 "requires_approval": action.requires_approval,
             },
         )
+        logger.info(
+            "external_action_pending",
+            extra={
+                "action_id": str(action.id),
+                "lead_id": str(lead_id),
+                "status": action.status.value,
+            },
+        )
         return action
 
     def approve(self, action_id: UUID) -> ExternalActionRecord:

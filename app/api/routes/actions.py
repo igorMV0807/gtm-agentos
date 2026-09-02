@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
-from app.api.dependencies import get_external_action_service
+from app.api.dependencies import get_external_action_service, require_operator
 from app.schemas.external_actions import ExternalActionResponse
 from app.services.external_action_service import (
     ExternalActionService,
@@ -11,7 +11,11 @@ from app.services.external_action_service import (
 )
 
 
-router = APIRouter(prefix="/api/v1/actions", tags=["external-actions"])
+router = APIRouter(
+    prefix="/api/v1/actions",
+    tags=["external-actions"],
+    dependencies=[Depends(require_operator)],
+)
 
 
 @router.post(

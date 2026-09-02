@@ -1,6 +1,6 @@
 # GTM AgentOS
 
-GTM AgentOS is a portfolio-grade backend for AI-assisted go-to-market workflows. This repository contains **Phase 1: AI Lead Qualification Core**, **Phase 2: Agent Orchestration with LangGraph**, **Phase 3: RAG Knowledge Layer**, **Phase 4: MCP & Controlled Agent Tools**, and **Phase 5: External Actions & n8n**.
+GTM AgentOS is a portfolio-grade backend for AI-assisted go-to-market workflows. This repository contains **Phase 1: AI Lead Qualification Core**, **Phase 2: Agent Orchestration with LangGraph**, **Phase 3: RAG Knowledge Layer**, **Phase 4: MCP & Controlled Agent Tools**, **Phase 5: External Actions & n8n**, and **Phase 6: Production Observability & Human Operations**.
 
 ## Problem
 
@@ -8,7 +8,7 @@ Revenue teams receive leads from multiple sources, but qualification is often in
 
 ## Solution
 
-The Phase 1 endpoint validates a lead, reuses an existing record when the same lead is submitted again, persists the lead in Supabase/PostgreSQL, asks Claude for a structured qualification, validates the result with Pydantic, stores the decision, and records the complete agent execution. Phase 2 adds a separate LangGraph endpoint that reuses this qualification service, applies deterministic routing, and records every state transition. Phase 3 grounds HOT-lead research in approved internal GTM documents retrieved with pgvector. Phase 4 exposes a small, read-only, schema-validated MCP tool surface over the same internal services and records every accepted or rejected execution attempt. Phase 5 turns safe agent decisions into allowlisted, approval-gated, idempotent actions dispatched to n8n with signed webhooks and auditable callbacks.
+The Phase 1 endpoint validates a lead, reuses an existing record when the same lead is submitted again, persists the lead in Supabase/PostgreSQL, asks Claude for a structured qualification, validates the result with Pydantic, stores the decision, and records the complete agent execution. Phase 2 adds a separate LangGraph endpoint that reuses this qualification service, applies deterministic routing, and records every state transition. Phase 3 grounds HOT-lead research in approved internal GTM documents retrieved with pgvector. Phase 4 exposes a small, read-only, schema-validated MCP tool surface over the same internal services and records every accepted or rejected execution attempt. Phase 5 turns safe agent decisions into allowlisted, approval-gated, idempotent actions dispatched to n8n with signed webhooks and auditable callbacks. Phase 6 adds an authenticated operations console, database-backed metrics, end-to-end lead timelines, approval controls, safe failure visibility, and honest AI usage estimates without increasing agent autonomy.
 
 The response contains:
 
@@ -27,11 +27,13 @@ app/
 │   └── state.py                    # Validated LangGraph state and transitions
 ├── api/
 │   ├── dependencies.py             # Composition root
-│   └── routes/                      # Lead, knowledge, approval, and callback endpoints
+│   └── routes/                      # Lead, admin, console, approval, and callback endpoints
 ├── core/
+│   ├── ai_pricing.py               # Isolated operator-managed AI price catalog
 │   ├── config.py                   # Environment-based settings
 │   ├── exceptions.py               # Safe application errors
-│   └── logging.py                  # JSON logging
+│   ├── logging.py                  # Sanitized JSON events
+│   └── operator_auth.py            # Constant-time key and signed sessions
 ├── models/
 │   ├── lead.py                     # Lead and agent run records
 │   ├── knowledge.py                # Knowledge, chunk, and evidence records
@@ -55,11 +57,15 @@ app/
 │   ├── mcp_repository.py           # Controlled read-only tool queries
 │   ├── tool_call_repository.py     # Append-only sanitized tool audit
 │   ├── external_action_repository.py # Idempotent action lifecycle persistence
+│   ├── observability_repository.py # Aggregate, timeline, and inspector queries
+│   ├── ai_usage_repository.py      # Append-only model usage events
+│   ├── demo_observability_repository.py # Explicit synthetic portfolio data
 │   └── agent_state_transition_repository.py
 ├── schemas/
 │   ├── lead.py                     # Input validation
 │   ├── knowledge.py                # Ingestion, retrieval, and source contracts
 │   ├── external_actions.py         # Closed action, callback, and draft schemas
+│   ├── observability.py             # Admin API response contracts
 │   ├── qualification.py            # Structured LLM output and Phase 1 response
 │   └── orchestration.py            # Routes, actions, status, Phase 2 response
 └── services/
@@ -68,6 +74,8 @@ app/
     ├── embedding_service.py        # Provider boundary + Voyage adapter
     ├── knowledge_ingestion_service.py
     ├── external_action_service.py  # Approval, dispatch, callback, and audit policy
+    ├── observability_service.py    # Metrics, timeline, and safe UI projections
+    ├── ai_usage_service.py         # Honest usage capture and cost estimation
     ├── lead_service.py             # Idempotent lead ingestion
     ├── llm_service.py              # Provider boundary + Anthropic adapter
     ├── qualification_service.py    # End-to-end qualification
@@ -78,6 +86,7 @@ sql/002_agent_state_transitions.sql # Immutable graph transition history
 sql/003_rag_knowledge_base.sql      # pgvector knowledge and RAG evidence
 sql/004_mcp_tool_calls.sql          # Immutable sanitized tool-call audit
 sql/005_external_actions.sql        # Approval-gated actions and immutable events
+sql/006_observability.sql           # AI usage, aggregate views, RLS, and grants
 n8n/gtm-agentos-actions.workflow.json # Credential-free demonstration workflow
 demo_knowledge/                     # Fictional portfolio knowledge documents
 tests/                              # External-service-free test suite
@@ -583,9 +592,105 @@ the provider placeholders when performing a separately authorized external
 integration validation; keep signature validation, allowlisting, idempotency, and
 callback signing intact.
 
+## Phase 6 — Production Observability & Human Operations
+
+Phase 6 adds an operational read model over the existing audit tables. It does not
+add agent capabilities or duplicate lifecycle data. `ObservabilityService` reads
+pre-aggregated SQL views for dashboard totals and performs bounded, lead- or
+run-scoped queries for drill-downs.
+
+```text
+                     GTM AgentOS
+
+Lead
+ ↓
+Qualification
+ ↓
+LangGraph
+ ↓
+RAG / MCP
+ ↓
+External Actions
+ ↓
+n8n
+ ↓
+Providers
+
+       │
+       │ telemetry
+       ↓
+
+Observability Layer
+       ↓
+Operator Console
+   ↙           ↘
+Inspect       Approve/Reject
+```
+
+### Operator Console and authentication boundary
+
+The browser console is available at `/operator`. A server-side login accepts the
+`OPERATOR_API_KEY`, compares it in constant time, and exchanges it for a bounded,
+signed `HttpOnly`, `SameSite=Strict` session cookie. The key is never returned in
+HTML, JavaScript, logs, or API responses. API clients can instead send the explicit
+`X-Operator-Key` header.
+
+The operator boundary protects all `/api/v1/admin/*` endpoints and the existing
+approve/reject endpoints. `/health` remains public. The n8n callback remains
+independent and continues to require its own timestamped HMAC signature.
+
+The console provides:
+
+- lead classification and volume cards;
+- agent success rate, failure counts, and average latency;
+- RAG retrieval counts plus ranked document title and similarity evidence;
+- MCP tool name, status, latency, and rejected-call visibility;
+- external action status, safe failure codes, and pending approvals;
+- an approval queue with allowlisted payload previews, including email subject and
+  body, without recipient addresses or raw payloads;
+- a run inspector with public reasoning summaries, never chain-of-thought;
+- a chronological lead timeline assembled from the existing audit tables;
+- provider-reported token usage and explicitly estimated AI cost.
+
+The administrative API is intentionally small:
+
+```text
+GET /api/v1/admin/overview
+GET /api/v1/admin/agent-runs
+GET /api/v1/admin/agent-runs/{run_id}
+GET /api/v1/admin/actions
+GET /api/v1/admin/leads/{lead_id}/timeline
+GET /api/v1/admin/usage
+```
+
+List endpoints enforce bounded `limit` and `offset` values. Failure projections
+return only a component, timestamp, and normalized safe error code; they never
+return stack traces or provider exception text.
+
+### AI usage and estimated cost
+
+Anthropic responses contribute `input_tokens` and `output_tokens` when the SDK
+reports them. Voyage responses contribute `total_tokens` when the provider reports
+that field. Missing usage remains `NULL`; the application does not estimate or
+reverse-engineer absent token counts.
+
+Pricing is isolated in `AIPricingCatalog` and supplied by the operator through
+`AI_PRICING_JSON`, keyed as `provider:model`. Each entry accepts
+`input_per_million_usd` plus `output_per_million_usd`, or
+`total_per_million_usd`. No default prices are embedded because provider pricing
+changes over time. Cost remains `NULL` until both the required provider usage and a
+matching operator-maintained price are available.
+
+### Health and readiness
+
+`GET /health` reports only that the process is running. `GET /ready` performs one
+bounded database read and reports `database: ok`; it never calls Claude, Voyage,
+n8n, HubSpot, or Resend. Errors use the existing safe `database_unavailable`
+contract without connection details.
+
 ## Database
 
-Run [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql), [`sql/002_agent_state_transitions.sql`](sql/002_agent_state_transitions.sql), [`sql/003_rag_knowledge_base.sql`](sql/003_rag_knowledge_base.sql), [`sql/004_mcp_tool_calls.sql`](sql/004_mcp_tool_calls.sql), and [`sql/005_external_actions.sql`](sql/005_external_actions.sql) in order before starting the API or MCP server.
+Run [`sql/001_initial_schema.sql`](sql/001_initial_schema.sql), [`sql/002_agent_state_transitions.sql`](sql/002_agent_state_transitions.sql), [`sql/003_rag_knowledge_base.sql`](sql/003_rag_knowledge_base.sql), [`sql/004_mcp_tool_calls.sql`](sql/004_mcp_tool_calls.sql), [`sql/005_external_actions.sql`](sql/005_external_actions.sql), and [`sql/006_observability.sql`](sql/006_observability.sql) in order before starting the API or MCP server.
 
 The migration creates:
 
@@ -630,6 +735,16 @@ The Phase 5 migration adds:
 - RLS and explicit revocation from `public`, `anon`, and `authenticated`;
 - service-role-only `SELECT`, `INSERT`, and conditional `UPDATE` for actions, and
   `SELECT`/`INSERT` for immutable events. No role receives `DELETE`.
+
+The Phase 6 migration adds:
+
+- append-only `ai_usage_events` with nullable provider-reported token counts,
+  nullable estimated cost, latency, operation constraints, and lead/run links;
+- indexes for recent usage and lead/run/provider inspection;
+- `security_invoker` aggregate views for overview and AI usage totals;
+- RLS plus explicit revocation from `public`, `anon`, and `authenticated`;
+- service-role-only `SELECT`/`INSERT` on usage events and `SELECT` on aggregate
+  views. No role receives `UPDATE` or `DELETE` on usage events.
 
 `SUPABASE_KEY` must be a backend-only Supabase secret/service-role key. Never expose it in a browser or commit it to Git.
 
@@ -688,7 +803,7 @@ Requirements: Python 3.12 and a Supabase project.
    `requirements.txt` lists the direct dependencies; `requirements.lock` pins the
    complete tested dependency graph for reproducible installations.
 
-3. Create the database objects by running `sql/001_initial_schema.sql`, `sql/002_agent_state_transitions.sql`, `sql/003_rag_knowledge_base.sql`, `sql/004_mcp_tool_calls.sql`, and `sql/005_external_actions.sql` in order in the Supabase SQL Editor.
+3. Create the database objects by running `sql/001_initial_schema.sql`, `sql/002_agent_state_transitions.sql`, `sql/003_rag_knowledge_base.sql`, `sql/004_mcp_tool_calls.sql`, `sql/005_external_actions.sql`, and `sql/006_observability.sql` in order in the Supabase SQL Editor.
 
 4. Copy `.env.example` to `.env` and configure:
 
@@ -710,6 +825,10 @@ Requirements: Python 3.12 and a Supabase project.
    N8N_WEBHOOK_SECRET=replace-with-a-long-random-shared-secret
    CRM_PROVIDER=hubspot
    HUBSPOT_ACCESS_TOKEN=
+   OPERATOR_API_KEY=replace-with-at-least-32-random-bytes
+   OPERATOR_SESSION_MAX_AGE_SECONDS=43200
+   AI_PRICING_JSON={}
+   PORTFOLIO_MODE=false
    ```
 
    `HUBSPOT_ACCESS_TOKEN` is optional until the HubSpot adapter is intentionally
@@ -726,9 +845,14 @@ Requirements: Python 3.12 and a Supabase project.
 
    ```bash
    curl http://localhost:8000/health
+   curl http://localhost:8000/ready
    ```
 
-7. Run the isolated MCP server over `stdio` when an MCP host needs the tools.
+7. Open `http://localhost:8000/operator`, enter the configured operator key, and
+   use the console to inspect runs or approve/reject pending actions. API clients
+   can use `X-Operator-Key` instead of the signed browser session.
+
+8. Run the isolated MCP server over `stdio` when an MCP host needs the tools.
 
    ```bash
    python -m app.mcp.server
@@ -737,6 +861,32 @@ Requirements: Python 3.12 and a Supabase project.
    Configure the MCP host to launch that command with this project as its working
    directory. Keep the environment server-side; never place Supabase, Anthropic,
    or Voyage secrets in MCP tool arguments.
+
+### Portfolio mode without paid credentials
+
+Portfolio mode uses an in-memory, clearly labeled synthetic read model. It makes no
+Supabase, Claude, Voyage, HubSpot, Resend, or n8n call. Approval buttons are disabled
+for synthetic actions so the demo cannot pretend an external action was executed.
+
+Windows PowerShell:
+
+```powershell
+$env:PORTFOLIO_MODE="true"
+$env:OPERATOR_API_KEY="portfolio-demo-operator-key-00000001"
+uvicorn app.main:app --reload
+```
+
+macOS/Linux:
+
+```bash
+PORTFOLIO_MODE=true \
+OPERATOR_API_KEY=portfolio-demo-operator-key-00000001 \
+uvicorn app.main:app --reload
+```
+
+Then open `http://localhost:8000/operator`. The console shows demo leads, agent
+runs, ranked RAG evidence, MCP calls, a pending email draft, and the approval queue,
+with a visible banner stating that the records are synthetic.
 
 ## Testing
 
@@ -790,6 +940,16 @@ Covered behavior includes:
 - CRM and n8n adapter requests through local recording fakes;
 - structured HOT email drafts, WARM task planning, and COLD no-action behavior;
 - continued compatibility of the Phase 1–4 behavior without external calls.
+- constant-time operator header authentication and signed `HttpOnly` sessions;
+- protected admin and approval endpoints with an independent n8n callback;
+- overview metrics, pagination, run inspection, timeline aggregation, and safe
+  failure projections;
+- RAG evidence, MCP rejected-call visibility, pending approval previews, and
+  approval/rejection through the console session;
+- provider-reported usage, isolated cost estimation, and honest missing-token
+  behavior;
+- public health, database readiness, migration security, and secret-free browser
+  assets.
 
 ## Roadmap
 
@@ -797,8 +957,9 @@ Covered behavior includes:
 - **Phase 2 — Agent orchestration with LangGraph** (completed)
 - **Phase 3 — RAG + PostgreSQL/pgvector** (completed)
 - **Phase 4 — Tools + MCP Server** (completed)
-- **Phase 5 — n8n + CRM + email integrations** (completed locally with fakes)
-- **Phase 6 — Observability + Human-in-the-loop + dashboard**
+- **Phase 5 — n8n + CRM + email integrations** (completed and externally validated)
+- **Phase 6 — Observability + Human-in-the-loop + dashboard** (completed locally)
 
-Phase 5 has not been validated against real n8n, HubSpot, or email accounts. No
-Phase 6 functionality is implemented in this codebase.
+Phase 6 has been validated locally with synthetic data and no paid provider calls.
+Its migration is intentionally not applied to the real Supabase project by this
+implementation step.

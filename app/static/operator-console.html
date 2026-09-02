@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>GTM AgentOS · Operations Console</title>
+  <link rel="stylesheet" href="/operator-assets/operator-console.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">GTM AgentOS</p>
+      <h1>Operations Console</h1>
+    </div>
+    <div class="topbar-actions">
+      <span class="health"><i></i> System online</span>
+      <form method="post" action="/operator/logout"><button class="button ghost" type="submit">Sign out</button></form>
+    </div>
+  </header>
+  <main class="shell">
+    <section id="demo-banner" class="demo-banner" hidden>
+      Portfolio demo mode — all records shown are synthetic. No provider was called.
+    </section>
+    <section class="metric-grid" aria-label="System metrics">
+      <article class="metric"><span>Total leads</span><strong id="total-leads">—</strong><small>All ingested leads</small></article>
+      <article class="metric hot"><span>HOT</span><strong id="hot-leads">—</strong><small>Research route</small></article>
+      <article class="metric warm"><span>WARM</span><strong id="warm-leads">—</strong><small>Nurture route</small></article>
+      <article class="metric cold"><span>COLD</span><strong id="cold-leads">—</strong><small>Stop route</small></article>
+      <article class="metric"><span>Agent success</span><strong id="agent-success">—</strong><small id="agent-latency">Average latency —</small></article>
+      <article class="metric"><span>AI estimated cost</span><strong id="ai-cost">—</strong><small>Configured price table</small></article>
+      <article class="metric"><span>Tool calls</span><strong id="tool-calls">—</strong><small id="tool-rejected">— rejected</small></article>
+      <article class="metric"><span>RAG retrievals</span><strong id="rag-retrievals">—</strong><small id="rag-similarity">Average similarity —</small></article>
+      <article class="metric attention"><span>Pending approvals</span><strong id="pending-approvals">—</strong><small>Human decision required</small></article>
+      <article class="metric danger"><span>Failed actions</span><strong id="failed-actions">—</strong><small>Safe errors only</small></article>
+    </section>
+
+    <section class="panel approvals-panel">
+      <div class="panel-heading"><div><p class="eyebrow">Human in the loop</p><h2>Pending Approvals</h2></div><button id="refresh" class="button ghost" type="button">Refresh</button></div>
+      <div id="approvals" class="approval-list"><p class="muted">Loading approval queue…</p></div>
+    </section>
+
+    <div class="two-column">
+      <section class="panel">
+        <div class="panel-heading"><div><p class="eyebrow">Execution history</p><h2>Agent Runs</h2></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Lead</th><th>Class</th><th>Status</th><th>Latency</th></tr></thead><tbody id="runs"></tbody></table></div>
+      </section>
+      <section class="panel" id="inspector-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Selected execution</p><h2>Run Inspector</h2></div></div>
+        <div id="inspector" class="empty-state">Select an agent run to inspect its grounded evidence and actions.</div>
+      </section>
+    </div>
+
+    <div class="two-column lower">
+      <section class="panel">
+        <div class="panel-heading"><div><p class="eyebrow">Audit trail</p><h2>Lead Timeline</h2></div></div>
+        <div id="timeline" class="empty-state">Timeline appears when a run is selected.</div>
+      </section>
+      <section class="panel">
+        <div class="panel-heading"><div><p class="eyebrow">Operational safety</p><h2>Recent Failures</h2></div></div>
+        <div id="failures" class="failure-list"></div>
+      </section>
+    </div>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/operator-assets/operator-console.js" defer></script>
+</body>
+</html>

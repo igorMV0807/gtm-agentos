@@ -1,4 +1,5 @@
 import logging
+from contextlib import nullcontext
 from time import perf_counter
 from uuid import UUID
 
@@ -9,6 +10,7 @@ from app.schemas.lead import LeadQualifyRequest
 from app.schemas.qualification import LeadQualifyResponse
 from app.services.lead_service import LeadService
 from app.services.llm_service import LLMService
+from app.services.ai_usage_service import AIUsageService
 
 
 logger = logging.getLogger(__name__)
@@ -21,10 +23,12 @@ class QualificationService:
         lead_repository: LeadRepository,
         agent_run_repository: AgentRunRepository,
         llm_service: LLMService,
+        ai_usage_service: AIUsageService | None = None,
     ) -> None:
         self._lead_repository = lead_repository
         self._agent_run_repository = agent_run_repository
         self._llm_service = llm_service
+        self._ai_usage_service = ai_usage_service
         self._lead_service = LeadService(lead_repository)
 
     @property
@@ -50,7 +54,15 @@ class QualificationService:
         started_at = perf_counter()
 
         try:
-            qualification = self._llm_service.qualify(payload)
+            usage_context = (
+                self._ai_usage_service.context(
+                    lead_id=lead.id, agent_run_id=run.id
+                )
+                if self._ai_usage_service is not None
+                else nullcontext()
+            )
+            with usage_context:
+                qualification = self._llm_service.qualify(payload)
             self._lead_repository.save_qualification(lead.id, qualification)
             latency_ms = self._latency_ms(started_at)
             self._agent_run_repository.mark_completed(
@@ -80,6 +92,25 @@ class QualificationService:
                 "classification": qualification.classification.value,
             },
         )
+        logger.info(
+            "lead_qualified",
+            extra={
+                "lead_id": str(lead.id),
+                "agent_run_id": str(run.id),
+                "status": "completed",
+                "latency_ms": latency_ms,
+                "classification": qualification.classification.value,
+            },
+        )
+        logger.info(
+            "agent_run_completed",
+            extra={
+                "lead_id": str(lead.id),
+                "agent_run_id": str(run.id),
+                "status": "completed",
+                "latency_ms": latency_ms,
+            },
+        )
 
         return LeadQualifyResponse(
             lead_id=lead.id,
@@ -92,6 +123,15 @@ class QualificationService:
                 run_id,
                 error=error_code,
                 latency_ms=latency_ms,
+            )
+            logger.warning(
+                "agent_run_failed",
+                extra={
+                    "agent_run_id": str(run_id),
+                    "status": "failed",
+                    "error_code": error_code,
+                    "latency_ms": latency_ms,
+                },
             )
         except GTMAgentOSError:
             logger.exception(

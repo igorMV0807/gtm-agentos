@@ -1,4 +1,5 @@
 import json
+from time import perf_counter
 from typing import Protocol
 
 import anthropic
@@ -14,6 +15,7 @@ from app.schemas.lead import LeadQualifyRequest
 from app.schemas.knowledge import GroundedResearchResult, RetrievedChunk
 from app.schemas.qualification import QualificationResult
 from app.schemas.external_actions import EmailDraft
+from app.services.ai_usage_service import AIUsageTracker
 
 
 class LLMService(Protocol):
@@ -47,6 +49,7 @@ class AnthropicLLMService:
         model: str,
         timeout_seconds: float,
         client: object | None = None,
+        usage_tracker: AIUsageTracker | None = None,
     ) -> None:
         self._model = model
         self._client = client or anthropic.Anthropic(
@@ -54,12 +57,14 @@ class AnthropicLLMService:
             timeout=timeout_seconds,
             max_retries=1,
         )
+        self._usage_tracker = usage_tracker
 
     @property
     def model(self) -> str:
         return self._model
 
     def qualify(self, lead: LeadQualifyRequest) -> QualificationResult:
+        started = perf_counter()
         try:
             response = self._client.messages.parse(  # type: ignore[union-attr]
                 model=self._model,
@@ -95,6 +100,8 @@ class AnthropicLLMService:
         except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise LLMInvalidResponseError("Anthropic response validation failed") from exc
 
+        self._record_usage(response, operation="qualification", started=started)
+
         parsed = getattr(response, "parsed_output", None)
         if parsed is None:
             raise LLMInvalidResponseError("Anthropic response had no parsed output")
@@ -123,6 +130,7 @@ class AnthropicLLMService:
                 for chunk in chunks
             ],
         }
+        started = perf_counter()
         try:
             response = self._client.messages.parse(  # type: ignore[union-attr]
                 model=self._model,
@@ -156,6 +164,8 @@ class AnthropicLLMService:
             raise LLMInvalidResponseError(
                 "Anthropic research response validation failed"
             ) from exc
+
+        self._record_usage(response, operation="research_context", started=started)
 
         parsed = getattr(response, "parsed_output", None)
         if parsed is None:
@@ -192,6 +202,7 @@ class AnthropicLLMService:
                 for chunk in chunks
             ],
         }
+        started = perf_counter()
         try:
             response = self._client.messages.parse(  # type: ignore[union-attr]
                 model=self._model,
@@ -227,6 +238,8 @@ class AnthropicLLMService:
                 "Anthropic email draft response validation failed"
             ) from exc
 
+        self._record_usage(response, operation="email_draft", started=started)
+
         parsed = getattr(response, "parsed_output", None)
         if parsed is None:
             raise LLMInvalidResponseError(
@@ -239,15 +252,47 @@ class AnthropicLLMService:
                 "Anthropic email draft response violated the schema"
             ) from exc
 
+    def _record_usage(
+        self, response: object, *, operation: str, started: float
+    ) -> None:
+        if self._usage_tracker is None:
+            return
+        usage = getattr(response, "usage", None)
+        input_tokens = _optional_token_count(getattr(usage, "input_tokens", None))
+        output_tokens = _optional_token_count(getattr(usage, "output_tokens", None))
+        total_tokens = (
+            input_tokens + output_tokens
+            if input_tokens is not None and output_tokens is not None
+            else None
+        )
+        self._usage_tracker.record(
+            provider=self.provider_name,
+            model=str(getattr(response, "model", None) or self._model),
+            operation=operation,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            latency_ms=max(0, round((perf_counter() - started) * 1000)),
+        )
 
-def build_llm_service(settings: Settings) -> LLMService:
+
+def build_llm_service(
+    settings: Settings, *, usage_tracker: AIUsageTracker | None = None
+) -> LLMService:
     provider, model, api_key = settings.require_llm()
     if provider == "anthropic":
         return AnthropicLLMService(
             api_key=api_key,
             model=model,
             timeout_seconds=settings.llm_timeout_seconds,
+            usage_tracker=usage_tracker,
         )
     # require_llm currently rejects unsupported providers. Keeping this guard makes
     # the provider boundary explicit when another adapter is added later.
     raise LLMProviderError(f"No adapter configured for provider {provider}")
+
+
+def _optional_token_count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value

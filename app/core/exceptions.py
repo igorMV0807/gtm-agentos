@@ -162,3 +162,9 @@ class WebhookReplayError(GTMAgentOSError):
     status_code = 401
     code = "stale_webhook_request"
     public_message = "The webhook request is outside the accepted time window"
+
+
+class OperatorAuthenticationError(GTMAgentOSError):
+    status_code = 401
+    code = "operator_auth_required"
+    public_message = "Valid operator authentication is required"

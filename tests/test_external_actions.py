@@ -9,7 +9,11 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.api.dependencies import get_external_action_service, get_webhook_signer
+from app.api.dependencies import (
+    get_external_action_service,
+    get_webhook_signer,
+    require_operator,
+)
 from app.core.config import Settings
 from app.core.exceptions import (
     ApplicationConfigurationError,
@@ -832,6 +836,7 @@ def test_approval_and_rejection_endpoints_only_target_existing_actions() -> None
     approved_action = _create_email_action(service, key="approve-endpoint")
     rejected_action = _create_email_action(service, key="reject-endpoint")
     app.dependency_overrides[get_external_action_service] = lambda: service
+    app.dependency_overrides[require_operator] = lambda: None
     try:
         with TestClient(app) as client:
             approved = client.post(f"/api/v1/actions/{approved_action.id}/approve")

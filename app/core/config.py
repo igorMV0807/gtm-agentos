@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     resend_api_key: SecretStr | None = None
     email_test_recipient: EmailStr | None = None
     resend_from_email: str = "GTM AgentOS <onboarding@resend.dev>"
+    operator_api_key: SecretStr | None = None
+    operator_session_max_age_seconds: int = Field(
+        default=43200, ge=900, le=86400
+    )
+    portfolio_mode: bool = False
+    ai_pricing_json: str | None = None
 
     # Internal timeout defaults stay out of .env.example; operators normally need
     # only provider identities, URLs, keys, and the bounded public tuning fields.
@@ -167,6 +173,18 @@ class Settings(BaseSettings):
             str(self.email_test_recipient),
             sender,
         )
+
+    def require_operator_key(self) -> str:
+        if self.operator_api_key is None:
+            raise ApplicationConfigurationError(
+                "OPERATOR_API_KEY must be configured"
+            )
+        key = self.operator_api_key.get_secret_value().strip()
+        if len(key.encode("utf-8")) < 32:
+            raise ApplicationConfigurationError(
+                "OPERATOR_API_KEY must contain at least 32 bytes"
+            )
+        return key
 
 
 @lru_cache

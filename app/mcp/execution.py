@@ -79,6 +79,10 @@ class ToolExecutionService:
                 "unknown_tool_rejected",
                 extra={**event_context, "status": "rejected", "latency_ms": latency_ms},
             )
+            logger.warning(
+                "mcp_tool_rejected",
+                extra={**event_context, "status": "rejected", "latency_ms": latency_ms},
+            )
             self._audit(
                 tool_name=tool_name,
                 arguments=arguments,
@@ -97,6 +101,10 @@ class ToolExecutionService:
             latency_ms = self._elapsed_ms(started)
             logger.warning(
                 "tool_input_rejected",
+                extra={**event_context, "status": "rejected", "latency_ms": latency_ms},
+            )
+            logger.warning(
+                "mcp_tool_rejected",
                 extra={**event_context, "status": "rejected", "latency_ms": latency_ms},
             )
             error = ToolInputInvalidError("Tool arguments violated the input schema")
@@ -140,6 +148,10 @@ class ToolExecutionService:
                     "latency_ms": latency_ms,
                     "error_code": exc.code,
                 },
+            )
+            logger.warning(
+                "mcp_tool_failed",
+                extra={**event_context, "status": "failed", "latency_ms": latency_ms, "error_code": exc.code},
             )
             raise
         except Exception as exc:
@@ -189,6 +201,14 @@ class ToolExecutionService:
         )
         logger.info(
             "tool_call_completed",
+            extra={
+                **event_context,
+                "status": audit.status.value,
+                "latency_ms": latency_ms,
+            },
+        )
+        logger.info(
+            "mcp_tool_completed",
             extra={
                 **event_context,
                 "status": audit.status.value,

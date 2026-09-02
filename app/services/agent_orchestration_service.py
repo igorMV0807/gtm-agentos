@@ -1,4 +1,5 @@
 import logging
+from contextlib import nullcontext
 from time import perf_counter
 from typing import Literal
 from uuid import UUID
@@ -46,6 +47,7 @@ from app.services.qualification_service import QualificationService
 from app.services.retrieval_service import RetrievalService
 from app.services.external_action_service import ExternalActionService
 from app.schemas.external_actions import ExternalActionType
+from app.services.ai_usage_service import AIUsageService
 
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,7 @@ class AgentOrchestrationService:
         rag_retrieval_repository: RagRetrievalRepository,
         llm_service: LLMService,
         external_action_service: ExternalActionService | None = None,
+        ai_usage_service: AIUsageService | None = None,
     ) -> None:
         self._lead_service = LeadService(lead_repository)
         self._agent_run_repository = agent_run_repository
@@ -85,6 +88,7 @@ class AgentOrchestrationService:
         self._rag_retrieval_repository = rag_retrieval_repository
         self._llm_service = llm_service
         self._external_action_service = external_action_service
+        self._ai_usage_service = ai_usage_service
         self._graph = self._build_graph()
 
     def orchestrate(
@@ -282,7 +286,8 @@ class AgentOrchestrationService:
         self._log_node(AgentStep.RETRIEVE_GTM_KNOWLEDGE, state)
         try:
             query = self._retrieval_service.build_lead_query(state.payload)
-            chunks = self._retrieval_service.search(query)
+            with self._usage_context(state):
+                chunks = self._retrieval_service.search(query)
             transition = self._transition(
                 state,
                 AgentStep.RETRIEVE_GTM_KNOWLEDGE,
@@ -326,10 +331,11 @@ class AgentOrchestrationService:
                     },
                 )
             else:
-                research_context = self._llm_service.build_research_context(
-                    state.payload,
-                    state.retrieved_chunks,
-                )
+                with self._usage_context(state):
+                    research_context = self._llm_service.build_research_context(
+                        state.payload,
+                        state.retrieved_chunks,
+                    )
                 logger.info(
                     "research_context_generated",
                     extra={
@@ -391,11 +397,12 @@ class AgentOrchestrationService:
                 raise AgentStateInvalidError(
                     "Grounded research is required before drafting outreach"
                 )
-            draft = self._llm_service.draft_outreach_email(
-                state.payload,
-                state.research_context,
-                state.retrieved_chunks,
-            )
+            with self._usage_context(state):
+                draft = self._llm_service.draft_outreach_email(
+                    state.payload,
+                    state.research_context,
+                    state.retrieved_chunks,
+                )
             transition = self._transition(
                 state,
                 AgentStep.DRAFT_OUTREACH_EMAIL,
@@ -573,11 +580,30 @@ class AgentOrchestrationService:
                     error=error,
                     latency_ms=latency_ms,
                 )
+                logger.warning(
+                    "agent_run_failed",
+                    extra={
+                        "lead_id": str(state.lead_id),
+                        "agent_run_id": str(state.agent_run_id),
+                        "status": "failed",
+                        "error_code": error,
+                        "latency_ms": latency_ms,
+                    },
+                )
             else:
                 self._agent_run_repository.mark_completed_payload(
                     state.agent_run_id,
                     output=self._run_output(state),
                     latency_ms=latency_ms,
+                )
+                logger.info(
+                    "agent_run_completed",
+                    extra={
+                        "lead_id": str(state.lead_id),
+                        "agent_run_id": str(state.agent_run_id),
+                        "status": "completed",
+                        "latency_ms": latency_ms,
+                    },
                 )
         except GTMAgentOSError as exc:
             self._mark_graph_run_failed(
@@ -789,6 +815,15 @@ class AgentOrchestrationService:
                 error=error_code,
                 latency_ms=latency_ms,
             )
+            logger.warning(
+                "agent_run_failed",
+                extra={
+                    "agent_run_id": str(run_id),
+                    "status": "failed",
+                    "error_code": error_code,
+                    "latency_ms": latency_ms,
+                },
+            )
         except GTMAgentOSError:
             logger.exception(
                 "agent_run_persist_failed",
@@ -906,3 +941,11 @@ class AgentOrchestrationService:
                 }
             )
         logger.info("agent_node_entered", extra=extra)
+
+    def _usage_context(self, state: AgentState):
+        if self._ai_usage_service is None:
+            return nullcontext()
+        return self._ai_usage_service.context(
+            lead_id=state.lead_id,
+            agent_run_id=state.agent_run_id,
+        )

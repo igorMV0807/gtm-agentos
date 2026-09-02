@@ -1,5 +1,6 @@
 import logging
 from math import isfinite
+from time import perf_counter
 from typing import Literal, Protocol
 
 import httpx
@@ -10,6 +11,7 @@ from app.core.exceptions import (
     EmbeddingProviderError,
     EmbeddingTimeoutError,
 )
+from app.services.ai_usage_service import AIUsageTracker
 
 
 logger = logging.getLogger(__name__)
@@ -47,11 +49,13 @@ class VoyageEmbeddingProvider:
         dimension: int,
         timeout_seconds: float,
         client: httpx.Client | None = None,
+        usage_tracker: AIUsageTracker | None = None,
     ) -> None:
         self._model = model
         self._dimension = dimension
         self._api_key = api_key
         self._client = client or httpx.Client(timeout=timeout_seconds)
+        self._usage_tracker = usage_tracker
 
     @property
     def model(self) -> str:
@@ -72,6 +76,7 @@ class VoyageEmbeddingProvider:
         if not texts or len(texts) > 1000 or any(not text.strip() for text in texts):
             raise EmbeddingInvalidResponseError("Embedding input is empty or too large")
 
+        started = perf_counter()
         try:
             response = self._client.post(
                 self._endpoint,
@@ -95,6 +100,28 @@ class VoyageEmbeddingProvider:
             raise EmbeddingInvalidResponseError("Voyage returned invalid JSON") from exc
 
         embeddings = self._parse_embeddings(payload, expected_count=len(texts))
+        if self._usage_tracker is not None:
+            usage = payload.get("usage") if isinstance(payload, dict) else None
+            total_tokens = (
+                usage.get("total_tokens") if isinstance(usage, dict) else None
+            )
+            if (
+                isinstance(total_tokens, bool)
+                or not isinstance(total_tokens, int)
+                or total_tokens < 0
+            ):
+                total_tokens = None
+            self._usage_tracker.record(
+                provider=self.provider_name,
+                model=self.model,
+                operation=(
+                    "embedding_document"
+                    if input_type == "document"
+                    else "embedding_query"
+                ),
+                total_tokens=total_tokens,
+                latency_ms=max(0, round((perf_counter() - started) * 1000)),
+            )
         logger.info(
             "embedding_generated",
             extra={
@@ -146,7 +173,9 @@ class VoyageEmbeddingProvider:
         return [embedding for _, embedding in indexed]
 
 
-def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
+def build_embedding_provider(
+    settings: Settings, *, usage_tracker: AIUsageTracker | None = None
+) -> EmbeddingProvider:
     provider, model, api_key, dimension = settings.require_embedding()
     if provider == "voyage":
         return VoyageEmbeddingProvider(
@@ -154,5 +183,6 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
             model=model,
             dimension=dimension,
             timeout_seconds=settings.embedding_timeout_seconds,
+            usage_tracker=usage_tracker,
         )
     raise EmbeddingProviderError(f"No adapter configured for provider {provider}")

@@ -1,9 +1,16 @@
 from functools import lru_cache
 
+from fastapi import Depends, Header, Request
 from supabase import Client, create_client
 
-from app.core.config import get_settings
-from app.core.exceptions import DatabaseUnavailableError
+from app.core.ai_pricing import AIPricingCatalog
+from app.core.config import Settings, get_settings
+from app.core.exceptions import DatabaseUnavailableError, OperatorAuthenticationError
+from app.core.operator_auth import (
+    OPERATOR_SESSION_COOKIE,
+    valid_operator_key,
+    valid_operator_session,
+)
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
     SupabaseAgentRunRepository,
@@ -38,6 +45,33 @@ from app.services.llm_service import LLMService, build_llm_service
 from app.services.qualification_service import QualificationService
 from app.services.retrieval_service import RetrievalService
 from app.services.external_action_service import ExternalActionService
+from app.repositories.ai_usage_repository import (
+    AIUsageRepository,
+    SupabaseAIUsageRepository,
+)
+from app.repositories.demo_observability_repository import (
+    DemoObservabilityRepository,
+)
+from app.repositories.observability_repository import (
+    ObservabilityRepository,
+    SupabaseObservabilityRepository,
+)
+from app.services.ai_usage_service import AIUsageService
+from app.services.observability_service import ObservabilityService
+
+
+def require_operator(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    x_operator_key: str | None = Header(default=None, alias="X-Operator-Key"),
+) -> None:
+    if valid_operator_key(x_operator_key, settings):
+        return
+    if valid_operator_session(
+        request.cookies.get(OPERATOR_SESSION_COOKIE), settings
+    ):
+        return
+    raise OperatorAuthenticationError()
 
 
 @lru_cache
@@ -90,13 +124,44 @@ def get_external_action_repository() -> ExternalActionRepository:
 
 
 @lru_cache
+def get_ai_usage_repository() -> AIUsageRepository:
+    return SupabaseAIUsageRepository(get_supabase_client())
+
+
+@lru_cache
+def get_ai_usage_service() -> AIUsageService:
+    settings = get_settings()
+    return AIUsageService(
+        repository=get_ai_usage_repository(),
+        pricing=AIPricingCatalog.from_json(settings.ai_pricing_json),
+    )
+
+
+@lru_cache
+def get_observability_repository() -> ObservabilityRepository:
+    if get_settings().portfolio_mode:
+        return DemoObservabilityRepository()
+    return SupabaseObservabilityRepository(get_supabase_client())
+
+
+@lru_cache
+def get_observability_service() -> ObservabilityService:
+    return ObservabilityService(
+        get_observability_repository(),
+        demo_mode=get_settings().portfolio_mode,
+    )
+
+
+@lru_cache
 def get_llm_service() -> LLMService:
-    return build_llm_service(get_settings())
+    return build_llm_service(get_settings(), usage_tracker=get_ai_usage_service())
 
 
 @lru_cache
 def get_embedding_provider() -> EmbeddingProvider:
-    return build_embedding_provider(get_settings())
+    return build_embedding_provider(
+        get_settings(), usage_tracker=get_ai_usage_service()
+    )
 
 
 @lru_cache
@@ -179,6 +244,7 @@ def get_qualification_service() -> QualificationService:
         lead_repository=get_lead_repository(),
         agent_run_repository=get_agent_run_repository(),
         llm_service=get_llm_service(),
+        ai_usage_service=get_ai_usage_service(),
     )
 
 
@@ -193,4 +259,5 @@ def get_agent_orchestration_service() -> AgentOrchestrationService:
         rag_retrieval_repository=get_rag_repository(),
         llm_service=get_llm_service(),
         external_action_service=get_external_action_request_service(),
+        ai_usage_service=get_ai_usage_service(),
     )
