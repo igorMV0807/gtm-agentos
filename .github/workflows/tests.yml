@@ -26,4 +26,7 @@ jobs:
 
       # The suite uses in-memory fakes and local transports: no secrets or paid API calls.
       - name: Run tests
-        run: python -m pytest -q
+        run: |
+          set -o pipefail
+          python -m pytest -q | tee pytest-output.txt
+          echo "::notice title=pytest::$(tail -n 1 pytest-output.txt)"
