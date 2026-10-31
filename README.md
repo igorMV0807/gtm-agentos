@@ -1,5 +1,7 @@
 # GTM AgentOS
 
+[![tests](https://github.com/igorMV0807/gtm-agentos/actions/workflows/tests.yml/badge.svg)](https://github.com/igorMV0807/gtm-agentos/actions/workflows/tests.yml)
+
 AI-native Revenue Operations platform that qualifies leads, orchestrates agent workflows, retrieves grounded GTM knowledge, exposes secure MCP tools, executes human-approved external actions, and provides production-style observability.
 
 GTM AgentOS is a backend-first portfolio project built to demonstrate how an AI workflow can remain useful, deterministic, auditable, and safe across model calls, retrieval, tools, and external actions.
@@ -21,7 +23,7 @@ GTM AgentOS is a backend portfolio project with synthetic data. It qualifies B2B
 | **Validation evidence** | Validation runs are described in [End-to-End Validation](#end-to-end-validation). Their logs and evidence artifacts are not included in this repository yet. |
 | **Code and how to run** | [Approval service](app/services/external_action_service.py) · [Action routes](app/api/routes/actions.py) · [Screenshots](#demo--screenshots) · [Running locally](#running-locally) · [Portfolio mode](#portfolio-mode) |
 
-Tests: 114 test functions, which expand to 118 parametrized cases. This is a static count; a recorded `pytest` run is not yet included. See [Testing](#testing).
+Tests: 114 test functions, which expand to 118 parametrized cases. They run on every push in [GitHub Actions](https://github.com/igorMV0807/gtm-agentos/actions/workflows/tests.yml). See [Testing](#testing).
 
 Author: Igor Marques · [LinkedIn](https://www.linkedin.com/in/igor-marques-790b9514b/)
 
@@ -90,7 +92,7 @@ MCP is a controlled, read-only tool surface rather than a mandatory hop in every
 - **Idempotency:** unique lead and action keys plus conditional updates are designed to prevent duplicate effects.
 - **Audit trails:** model runs, graph transitions, RAG evidence, MCP calls, external-action events, callbacks, and AI usage.
 - **Operator experience:** authenticated dashboard, run inspector, lead timeline, approval queue, failure visibility, latency, and cost estimates.
-- **Regression coverage:** 114 test functions (118 parametrized cases) across the six implemented phases. The count is static; a recorded `pytest` run is not yet included.
+- **Regression coverage:** 114 test functions (118 parametrized cases) across the six implemented phases. Run in CI on every push.
 
 ## Demo / Screenshots
 
@@ -467,7 +469,7 @@ Run:
 pytest
 ```
 
-The suite contains 114 test functions, which expand to 118 parametrized cases. This count is static; a recorded `pytest` run is not yet included in this repository. It replaces Supabase, Claude, Voyage, vector search, n8n, HubSpot, Resend, and MCP persistence with in-memory fakes or local transports, so regression runs require no paid calls or secrets.
+The suite contains 114 test functions, which expand to 118 parametrized cases. GitHub Actions runs the suite on Python 3.12 with the locked dependencies on every push and pull request; each run posts the pytest summary as an annotation. It replaces Supabase, Claude, Voyage, vector search, n8n, HubSpot, Resend, and MCP persistence with in-memory fakes or local transports, so regression runs require no paid calls or secrets.
 
 Coverage includes:
 
