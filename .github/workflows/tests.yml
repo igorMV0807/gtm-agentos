@@ -13,9 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -28,5 +28,5 @@ jobs:
       - name: Run tests
         run: |
           set -o pipefail
-          python -m pytest -q | tee pytest-output.txt
+          python -m pytest | tee pytest-output.txt
           echo "::notice title=pytest::$(tail -n 1 pytest-output.txt)"
