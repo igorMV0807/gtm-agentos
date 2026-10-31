@@ -15,10 +15,10 @@ GTM AgentOS is a backend portfolio project with synthetic data. It qualifies B2B
 | If you want to know... | Read this |
 |---|---|
 | **The problem** | Revenue workflows mix lead review, model decisions and automations that write to CRMs and send emails. Each of those needs explicit boundaries. |
-| **How it works** | Lead → FastAPI validation → Claude structured qualification → fixed route (HOT, WARM, COLD) → grounded research for HOT leads → proposed action (PENDING) → operator approval → signed dispatch to n8n. [Architecture](#architecture) |
-| **The main engineering decision** | The model proposes and the application decides. The model cannot choose graph nodes, tools or destinations, and an action reaches n8n only after an operator approves it. [Approval gates](#approval-gates-and-external-effects) |
+| **How it works** | Lead → FastAPI validation → Claude structured qualification → application-owned routing: HOT → grounded research; WARM → nurture; COLD → stop. When an external action is proposed: persist as PENDING → operator approval → signed dispatch to n8n. [Architecture](#architecture) |
+| **The main engineering decision** | The model proposes and the application decides. The model cannot choose graph nodes, tools or destinations. Drafts can be prepared without human approval, but actions dispatched to n8n require approval by an authenticated operator. [Approval gates](#approval-gates-and-external-effects) |
 | **Implemented in code** | Deterministic routing, schema validation, RAG with a similarity threshold, approval gate, idempotency keys, HMAC-signed dispatch, six read-only MCP tools, RLS migrations, append-only operational history. [Project Status](#project-status) |
-| **Validated** | Validation runs are described in [End-to-End Validation](#end-to-end-validation). Their logs and evidence artifacts are not included in this repository yet. |
+| **Validation evidence** | Validation runs are described in [End-to-End Validation](#end-to-end-validation). Their logs and evidence artifacts are not included in this repository yet. |
 | **Code and how to run** | [Approval service](app/services/external_action_service.py) · [Action routes](app/api/routes/actions.py) · [Screenshots](#demo--screenshots) · [Running locally](#running-locally) · [Portfolio mode](#portfolio-mode) |
 
 Tests: 114 test functions, which expand to 118 parametrized cases. This is a static count; a recorded `pytest` run is not yet included. See [Testing](#testing).
