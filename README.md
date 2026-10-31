@@ -4,6 +4,27 @@ AI-native Revenue Operations platform that qualifies leads, orchestrates agent w
 
 GTM AgentOS is a backend-first portfolio project built to demonstrate how an AI workflow can remain useful, deterministic, auditable, and safe across model calls, retrieval, tools, and external actions.
 
+## Start here
+
+GTM AgentOS is a backend portfolio project with synthetic data. It qualifies B2B leads with Claude, grounds HOT-lead research in internal knowledge through RAG, and holds external actions for operator approval before they reach n8n.
+
+![Operations Console in portfolio demo mode, with a banner stating that all records are synthetic and no provider was called](docs/images/operations-overview.png)
+
+*Real capture from the local portfolio demo ([full size](docs/images/operations-overview.png)). The records are synthetic, and the banner and `(Demo)` labels say so.*
+
+| If you want to know... | Read this |
+|---|---|
+| **The problem** | Revenue workflows mix lead review, model decisions and automations that write to CRMs and send emails. Each of those needs explicit boundaries. |
+| **How it works** | Lead → FastAPI validation → Claude structured qualification → application-owned routing: HOT → grounded research; WARM → nurture; COLD → stop. When an external action is proposed: persist as PENDING → operator approval → signed dispatch to n8n. [Architecture](#architecture) |
+| **The main engineering decision** | The model proposes and the application decides. The model cannot choose graph nodes, tools or destinations. Drafts can be prepared without human approval, but actions dispatched to n8n require approval by an authenticated operator. [Approval gates](#approval-gates-and-external-effects) |
+| **Implemented in code** | Deterministic routing, schema validation, RAG with a similarity threshold, approval gate, idempotency keys, HMAC-signed dispatch, six read-only MCP tools, RLS migrations, append-only operational history. [Project Status](#project-status) |
+| **Validation evidence** | Validation runs are described in [End-to-End Validation](#end-to-end-validation). Their logs and evidence artifacts are not included in this repository yet. |
+| **Code and how to run** | [Approval service](app/services/external_action_service.py) · [Action routes](app/api/routes/actions.py) · [Screenshots](#demo--screenshots) · [Running locally](#running-locally) · [Portfolio mode](#portfolio-mode) |
+
+Tests: 114 test functions, which expand to 118 parametrized cases. This is a static count; a recorded `pytest` run is not yet included. See [Testing](#testing).
+
+Author: Igor Marques · [LinkedIn](https://www.linkedin.com/in/igor-marques-790b9514b/)
+
 ## What It Does
 
 - Accepts and validates B2B leads through FastAPI.
@@ -22,7 +43,7 @@ Revenue workflows often combine inconsistent lead review, opaque model decisions
 - retrieval is grounded in approved internal knowledge;
 - every graph transition and tool call is auditable;
 - external side effects require explicit policy and, where required, human approval;
-- retries do not create duplicate leads, CRM records, or email sends;
+- retries are designed not to create duplicate leads, CRM records, or email sends;
 - secrets remain server-side and sensitive fields are redacted from logs and audit payloads.
 
 ## Architecture
@@ -66,10 +87,10 @@ MCP is a controlled, read-only tool surface rather than a mandatory hop in every
 - **Six MCP tools:** allowlisted discovery, strict input/output schemas, safe projections, and append-only tool-call auditing.
 - **Human-in-the-loop actions:** approval gates, closed action schemas, conditional state transitions, and safe callbacks.
 - **n8n security:** HMAC SHA-256 signatures, replay-window checks, fixed provider destinations, and explicit rejection of disallowed actions.
-- **Idempotency:** unique lead and action keys plus conditional updates prevent duplicate effects.
+- **Idempotency:** unique lead and action keys plus conditional updates are designed to prevent duplicate effects.
 - **Audit trails:** model runs, graph transitions, RAG evidence, MCP calls, external-action events, callbacks, and AI usage.
 - **Operator experience:** authenticated dashboard, run inspector, lead timeline, approval queue, failure visibility, latency, and cost estimates.
-- **Regression coverage:** 118 automated tests across the six implemented phases.
+- **Regression coverage:** 114 test functions (118 parametrized cases) across the six implemented phases. The count is static; a recorded `pytest` run is not yet included.
 
 ## Demo / Screenshots
 
@@ -309,6 +330,8 @@ GET /ready
 
 ## End-to-End Validation
 
+Evidence artifacts (logs, screenshots, redacted records) are not included in this repository yet, so the runs below are described rather than reproducible here.
+
 The project was exercised through controlled real integrations in addition to its isolated test suite:
 
 - **Supabase/PostgreSQL:** migrations, persistence, RLS/grants, lead/run records, graph transitions, vector retrieval, action events, tool calls, and observability queries.
@@ -444,7 +467,7 @@ Run:
 pytest
 ```
 
-The suite contains 118 tests. It replaces Supabase, Claude, Voyage, vector search, n8n, HubSpot, Resend, and MCP persistence with in-memory fakes or local transports, so regression runs require no paid calls or secrets.
+The suite contains 114 test functions, which expand to 118 parametrized cases. This count is static; a recorded `pytest` run is not yet included in this repository. It replaces Supabase, Claude, Voyage, vector search, n8n, HubSpot, Resend, and MCP persistence with in-memory fakes or local transports, so regression runs require no paid calls or secrets.
 
 Coverage includes:
 
@@ -472,13 +495,13 @@ app/
 demo_knowledge/      # fictional internal GTM documents
 n8n/                # credential-free workflow export
 sql/                # incremental migrations
-tests/               # 118-test regression suite
+tests/               # 114 test functions (118 parametrized cases)
 docs/images/        # reserved sanitized public screenshots
 ```
 
 ## Project Status
 
-Phases 1–6 are implemented and validated. The repository is production-oriented and portfolio-ready in architecture, safety boundaries, tests, and documentation; operating it in production would still require environment-specific deployment, monitoring, secret management, data-retention, and incident-response decisions.
+Phases 1–6 are implemented. End-to-end validation runs are described in the End-to-End Validation section; their evidence artifacts are not included in this repository. The repository is portfolio-ready, with a production-minded architecture in its safety boundaries, tests, and documentation; operating it in production would still require environment-specific deployment, monitoring, secret management, data-retention, and incident-response decisions.
 
 ## License
 
