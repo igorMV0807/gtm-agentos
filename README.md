@@ -1,4 +1,6 @@
 # GTM AgentOS
+r
+[![tests](https://github.com/igorMV0807/gtm-agentos/actions/workflows/tests.yml/badge.svg)](https://github.com/igorMV0807/gtm-agentos/actions/workflows/tests.yml)
 
 AI-native Revenue Operations platform that qualifies leads, orchestrates agent workflows, retrieves grounded GTM knowledge, exposes secure MCP tools, executes human-approved external actions, and provides production-style observability.
 
